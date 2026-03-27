@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reelful - Welcome Screen (Final)</title>
+  <style>
+    /* PP Neue Montreal - add your font files to assets/fonts/ folder */
+    @font-face {
+      font-family: 'PP Neue Montreal';
+      src: url('./assets/fonts/PPNeueMontreal-Book.woff2') format('woff2'),
+           url('./assets/fonts/PPNeueMontreal-Book.otf') format('opentype');
+      font-weight: 400;
+      font-style: normal;
+    }
+    @font-face {
+      font-family: 'PP Neue Montreal';
+      src: url('./assets/fonts/PPNeueMontreal-Medium.woff2') format('woff2'),
+           url('./assets/fonts/PPNeueMontreal-Medium.otf') format('opentype');
+      font-weight: 500;
+      font-style: normal;
+    }
+    @font-face {
+      font-family: 'PP Neue Montreal';
+      src: url('./assets/fonts/PPNeueMontreal-Bold.woff2') format('woff2'),
+           url('./assets/fonts/PPNeueMontreal-Bold.otf') format('opentype');
+      font-weight: 700;
+      font-style: normal;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'PP Neue Montreal', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #1a1a1a;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    /* Phone frame */
+    .phone-frame {
+      width: 390px;
+      height: 844px;
+      background: #1a1a18;
+      border-radius: 44px;
+      padding: 0;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      overflow: hidden;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Main content */
+    .welcome-screen {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      padding: 60px 24px 48px;
+      padding-left: 32px;
+      position: relative;
+    }
+
+    /* Title */
+    .title {
+      font-family: 'PP Neue Montreal', sans-serif;
+      font-size: 50px;
+      font-weight: 500;
+      color: #f3ebe3;
+      letter-spacing: -1px;
+      margin-bottom: 20px;
+      text-align: left;
+      width: 100%;
+      position: relative;
+      z-index: 10;
+    }
+
+    /* Reel image container */
+    .reel-container {
+      position: absolute;
+      right: -410px;
+      top: 43%;
+      transform: translateY(-50%);
+      width: 800px;
+      height: 800px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1;
+    }
+
+    .reel-image {
+      width: 780px;
+      height: 780px;
+      object-fit: contain;
+      animation: roll 6s linear infinite;
+      transform-origin: center center;
+    }
+
+    .reel-image.steady {
+      animation: rollEased 6s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+    }
+
+    @keyframes roll {
+      from {
+        rotate: 0deg;
+      }
+      to {
+        rotate: 360deg;
+      }
+    }
+
+    @keyframes rollEased {
+      0% {
+        rotate: 0deg;
+      }
+      25% {
+        rotate: 95deg;
+      }
+      50% {
+        rotate: 180deg;
+      }
+      75% {
+        rotate: 265deg;
+      }
+      100% {
+        rotate: 360deg;
+      }
+    }
+
+    /* Bottom section */
+    .bottom-section {
+      position: absolute;
+      bottom: 48px;
+      left: 24px;
+      right: 24px;
+      width: auto;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      z-index: 10;
+    }
+
+    /* Get Started button - subtle 3D dome, pillowy inset */
+    .get-started-btn {
+      width: 100%;
+      height: 64px;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% 0%, rgba(255, 255, 255, 0.15) 0%, transparent 50%),
+        linear-gradient(180deg, #f5ede5 0%, #e8ddd3 50%, #ddd0c4 100%);
+      border: none;
+      border-radius: 100px;
+      color: rgba(0, 0, 0, 0.85);
+      font-family: 'PP Neue Montreal', sans-serif;
+      font-size: 18px;
+      font-weight: 500;
+      letter-spacing: 0.3px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      box-shadow:
+        inset 0 2px 4px rgba(255, 255, 255, 0.3),
+        inset 0 -1px 2px rgba(0, 0, 0, 0.08),
+        0 1px 2px rgba(0, 0, 0, 0.3);
+    }
+
+    .get-started-btn:hover {
+      background:
+        radial-gradient(ellipse 80% 50% at 50% 0%, rgba(255, 255, 255, 0.2) 0%, transparent 50%),
+        linear-gradient(180deg, #f8f0e8 0%, #ebe0d6 50%, #e0d3c7 100%);
+      box-shadow:
+        inset 0 2px 4px rgba(255, 255, 255, 0.35),
+        inset 0 -1px 2px rgba(0, 0, 0, 0.06),
+        0 1px 2px rgba(0, 0, 0, 0.35);
+    }
+
+    .get-started-btn:active {
+      background:
+        radial-gradient(ellipse 80% 50% at 50% 0%, rgba(255, 255, 255, 0.1) 0%, transparent 50%),
+        linear-gradient(180deg, #ebe0d6 0%, #ddd0c4 50%, #d3c4b8 100%);
+      box-shadow:
+        inset 0 3px 6px rgba(0, 0, 0, 0.15),
+        inset 0 -1px 1px rgba(255, 255, 255, 0.2);
+    }
+
+    /* Terms text */
+    .terms-text {
+      font-family: 'PP Neue Montreal', sans-serif;
+      font-size: 12px;
+      font-weight: 400;
+      color: #9a9a9a;
+      text-align: center;
+      line-height: 1.5;
+      max-width: 300px;
+    }
+
+    .terms-text a {
+      color: #9a9a9a;
+      text-decoration: underline;
+    }
+
+    .terms-text a:hover {
+      color: #f3ebe3;
+    }
+
+    /* Cinema spotlight blobs */
+    .spotlight-blob {
+      position: absolute;
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0;
+      filter: blur(60px);
+      width: 250px;
+      height: 180px;
+      background: radial-gradient(
+        ellipse 100% 80% at 50% 50%,
+        rgba(255, 250, 242, 0.55) 0%,
+        rgba(255, 235, 210, 0.22) 30%,
+        rgba(255, 215, 190, 0.07) 60%,
+        transparent 100%
+      );
+      transition: opacity 1.5s ease-in-out, transform 1.5s ease-in-out;
+    }
+
+    .spotlight-blob.visible {
+      opacity: 1;
+      transform: scale(1.05);
+    }
+
+    /* Subtle ambient glow where reel meets dark */
+    .reel-ambient-glow {
+      position: absolute;
+      right: 0;
+      top: 30%;
+      width: 200px;
+      height: 400px;
+      background: radial-gradient(
+        ellipse 100% 100% at 100% 50%,
+        rgba(255, 200, 150, 0.08) 0%,
+        rgba(255, 180, 130, 0.04) 40%,
+        transparent 70%
+      );
+      pointer-events: none;
+      z-index: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="phone-frame">
+    <!-- Cinema spotlight blob (animated via JS) -->
+    <div class="spotlight-blob"></div>
+
+    <!-- Ambient glow where reel meets background -->
+    <div class="reel-ambient-glow"></div>
+
+    <div class="welcome-screen">
+      <!-- Title -->
+      <h1 class="title">Reelful</h1>
+
+      <!-- Reel Image -->
+      <div class="reel-container">
+        <img
+          src="../assets/images/white-reel.png"
+          alt="Film Reel"
+          class="reel-image"
+        />
+      </div>
+
+      <!-- Bottom Section -->
+      <div class="bottom-section">
+        <button class="get-started-btn">Get Started</button>
+        <p class="terms-text">
+          By tapping "Get Started", you agree to our
+          <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Random spotlight blob animation
+    const blob = document.querySelector('.spotlight-blob');
+    if (blob) {
+      function animateBlob() {
+        // Random position within left portion of screen
+        const randomTop = Math.random() * 70; // 0-70%
+        const randomLeft = Math.random() * 40 - 10; // -10% to 30%
+
+        // Random size variation
+        const randomWidth = 180 + Math.random() * 120; // 180-300px
+        const randomHeight = 140 + Math.random() * 100; // 140-240px
+
+        // Set new position and size
+        blob.style.top = randomTop + '%';
+        blob.style.left = randomLeft + '%';
+        blob.style.width = randomWidth + 'px';
+        blob.style.height = randomHeight + 'px';
+
+        // Fade in
+        blob.classList.add('visible');
+
+        // Fade out after random duration (2-4 seconds)
+        const visibleDuration = 2000 + Math.random() * 2000;
+        setTimeout(() => {
+          blob.classList.remove('visible');
+
+          // Wait for fade out, then animate again after random delay
+          const pauseDuration = 1000 + Math.random() * 2000;
+          setTimeout(animateBlob, 1500 + pauseDuration);
+        }, visibleDuration);
+      }
+
+      // Start animation after a short delay
+      setTimeout(animateBlob, 1000);
+    }
+  </script>
+</body>
+</html>

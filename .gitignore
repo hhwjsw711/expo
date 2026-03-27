@@ -1,0 +1,45 @@
+# === Dependencies ===
+node_modules/
+
+# === Environment / Secrets ===
+.env
+.env.*
+.env*.local
+**/set-env-prod.sh
+**/set-env-dev.sh
+**/prod-backup.zip
+expo-env.d.ts
+
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Build outputs ===
+dist/
+out/
+build/
+web-build/
+
+# === App (Expo / React Native) ===
+.expo/
+ios/
+android/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+.metro-health-check*
+.rork
+rork-eslint.config.js
+core
+.maestro/
+
+# === AI tool caches (optional - remove if you want to track these) ===
+.claude/
+.cursor/
+
+node_modules
+.expo
