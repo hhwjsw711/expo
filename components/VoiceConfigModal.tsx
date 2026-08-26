@@ -10,7 +10,9 @@ import {
   ScrollView,
   Image,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -107,25 +109,32 @@ export default function VoiceConfigModal({
   const uploadVoiceRecording = async (uri: string): Promise<string | null> => {
     try {
       console.log('[VoiceConfigModal] Uploading voice recording...');
-      
+
       // Get upload URL
       const uploadUrl = await generateUploadUrl();
-      
-      // Read the file
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      
+
+      // Read the file as base64 and convert to Uint8Array for upload
+      // (RN's Blob/arrayBuffer doesn't work with Convex upload URLs)
+      const base64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
       // Upload to Convex storage
       const uploadResponse = await fetch(uploadUrl, {
         method: 'POST',
-        headers: { 'Content-Type': blob.type },
-        body: blob,
+        headers: { 'Content-Type': 'audio/aac' },
+        body: bytes,
       });
-      
+
       if (!uploadResponse.ok) {
         throw new Error('Failed to upload voice recording');
       }
-      
+
       const { storageId } = await uploadResponse.json();
       console.log('[VoiceConfigModal] Voice recording uploaded:', storageId);
       return storageId;

@@ -71,9 +71,7 @@ module.exports = ({ config }) => {
       ],
       [
         'expo-router',
-        {
-          origin: 'https://rork.com/',
-        },
+        {},
       ],
       [
         'expo-notifications',
@@ -98,14 +96,16 @@ module.exports = ({ config }) => {
       'expo-font',
       'expo-web-browser',
       'expo-video',
+      'expo-asset',
+      'expo-image',
+      'expo-splash-screen',
+      'expo-status-bar',
+      'expo-audio',
     ],
     experiments: {
       typedRoutes: true,
     },
     extra: {
-      router: {
-        origin: 'https://rork.com/',
-      },
       eas: {
         projectId: 'b3b0f220-6056-4d93-8503-cb9798c67f3f',
       },

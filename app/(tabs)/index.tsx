@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { Loader2, AlertCircle, FileText, Zap, Clock, Calendar, Plus , Trash2 } from 'lucide-react-native';
+import { Loader2, AlertCircle, FileText, Zap, Clock, Calendar, Plus , Trash2, Clapperboard } from 'lucide-react-native';
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   Dimensions,
@@ -249,6 +249,34 @@ function VideoThumbnail({
           </Animated.View>
           <Text style={styles.processingText}>{statusText}</Text>
           <Text style={styles.processingHintText}>Takes a couple of minutes.{'\n'}You can leave the app.</Text>
+        </View>
+      );
+    }
+
+    if (item.status === 'ready' && (!item.uri || item.uri.length === 0)) {
+      if (effectiveThumbnailUrl) {
+        return (
+          <>
+            <Image
+              source={effectiveThumbnailUrl}
+              style={styles.thumbnail}
+              contentFit="cover"
+              cachePolicy="disk"
+              transition={200}
+            />
+            <View style={styles.processingOverlay}>
+              <Clapperboard size={32} color={Colors.ember} strokeWidth={2} />
+              <Text style={styles.processingText}>Ready to Render</Text>
+              <Text style={styles.processingHintTextOverlay}>Tap to preview & render</Text>
+            </View>
+          </>
+        );
+      }
+      return (
+        <View style={styles.processingThumbnail}>
+          <Clapperboard size={32} color={Colors.ember} strokeWidth={2} />
+          <Text style={styles.processingText}>Ready to Render</Text>
+          <Text style={styles.processingHintText}>Tap to preview & render</Text>
         </View>
       );
     }
@@ -565,8 +593,24 @@ export default function FeedTab() {
             });
             releaseNavigationLock(lockKey, 750);
           } else if (item.status === 'ready' && (!item.uri || item.uri.length === 0)) {
-            Alert.alert('Error', 'Video is not available. Please try again or contact support.');
-            releaseNavigationLock(lockKey);
+            // Sequence is ready but video hasn't been rendered yet — go to video-preview for render
+            if (item.projectId) {
+              router.push({
+                pathname: '/video-preview',
+                params: {
+                  videoId: item.id,
+                  videoUri: '',
+                  prompt: item.prompt,
+                  script: item.script || '',
+                  projectId: item.projectId,
+                  thumbnailUrl: item.thumbnailUrl || '',
+                },
+              });
+              releaseNavigationLock(lockKey, 750);
+            } else {
+              Alert.alert('Error', 'Video is not available. Please try again or contact support.');
+              releaseNavigationLock(lockKey);
+            }
           } else if (item.status === 'pending' || item.status === 'processing' || item.status === 'preparing') {
             // Navigate to video-preview in generating mode to show progress
             if (item.projectId) {

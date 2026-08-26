@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { Audio } from 'expo-av';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
 import { useAction } from 'convex/react';
 import { api } from '@/convex/_generated/api';
 
@@ -11,11 +11,11 @@ import { api } from '@/convex/_generated/api';
 export function useVoicePreview() {
   const [playingPreviewId, setPlayingPreviewId] = useState<string | null>(null);
   const [isGeneratingPreview, setIsGeneratingPreview] = useState(false);
-  const [sound, setSound] = useState<Audio.Sound | null>(null);
-  const [cachedSounds, setCachedSounds] = useState<Record<string, Audio.Sound>>({});
+  const [sound, setSound] = useState<AudioPlayer | null>(null);
+  const [cachedSounds, setCachedSounds] = useState<Record<string, AudioPlayer>>({});
   const livePreviewIdRef = useRef<string | null>(null);
-  const soundRef = useRef<Audio.Sound | null>(null);
-  const cachedSoundsRef = useRef<Record<string, Audio.Sound>>({});
+  const soundRef = useRef<AudioPlayer | null>(null);
+  const cachedSoundsRef = useRef<Record<string, AudioPlayer>>({});
   const previewVoiceAction = useAction(api.aiServices.previewVoice);
 
   useEffect(() => {
@@ -26,23 +26,32 @@ export function useVoicePreview() {
     cachedSoundsRef.current = cachedSounds;
   }, [cachedSounds]);
 
+  const cleanupPlayer = useCallback((player: AudioPlayer) => {
+    try {
+      player.removeAllListeners();
+      player.remove();
+    } catch (e) {
+      console.error('Error cleaning up player:', e);
+    }
+  }, []);
+
   useEffect(() => {
     return () => {
-      soundRef.current?.unloadAsync().catch(console.error);
-      Object.values(cachedSoundsRef.current).forEach(s => s.unloadAsync().catch(console.error));
+      if (soundRef.current) cleanupPlayer(soundRef.current);
+      Object.values(cachedSoundsRef.current).forEach(s => cleanupPlayer(s));
     };
-  }, []);
+  }, [cleanupPlayer]);
 
   const stopAllPreviews = async () => {
     livePreviewIdRef.current = null;
     setIsGeneratingPreview(false);
     if (sound) {
-      await sound.stopAsync().catch(console.error);
-      await sound.unloadAsync().catch(console.error);
+      try { sound.pause(); } catch (e) { console.error(e); }
+      cleanupPlayer(sound);
       setSound(null);
     }
     for (const s of Object.values(cachedSounds)) {
-      await s.unloadAsync().catch(console.error);
+      cleanupPlayer(s);
     }
     setCachedSounds({});
     setPlayingPreviewId(null);
@@ -52,7 +61,7 @@ export function useVoicePreview() {
     livePreviewIdRef.current = null;
     setIsGeneratingPreview(false);
     if (sound) {
-      await sound.stopAsync().catch(console.error);
+      try { sound.pause(); } catch (e) { console.error(e); }
     }
 
     if (playingPreviewId === voiceId) {
@@ -63,38 +72,42 @@ export function useVoicePreview() {
     setPlayingPreviewId(voiceId);
 
     try {
-      await Audio.setAudioModeAsync({
-        playsInSilentModeIOS: true,
-        allowsRecordingIOS: false,
-        staysActiveInBackground: false,
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        allowsRecording: false,
+        shouldPlayInBackground: false,
       });
 
-      const cachedSound = cachedSounds[voiceId];
+      const cachedPlayer = cachedSounds[voiceId];
 
-      if (cachedSound) {
-        await cachedSound.setPositionAsync(0);
-        await cachedSound.playAsync();
-        setSound(cachedSound);
+      if (cachedPlayer) {
+        cachedPlayer.seekTo(0);
+        cachedPlayer.play();
+        setSound(cachedPlayer);
 
-        cachedSound.setOnPlaybackStatusUpdate((status) => {
+        const listener = cachedPlayer.addListener('playbackStatusUpdate', (status) => {
           if (status.isLoaded && status.didJustFinish) {
             setPlayingPreviewId(null);
+            cachedPlayer.seekTo(0);
           }
         });
+        // Store listener reference for cleanup
+        (cachedPlayer as any)._statusListener = listener;
       } else {
-        const { sound: newSound } = await Audio.Sound.createAsync(
-          { uri: previewUrl },
-          { shouldPlay: true }
-        );
+        const newPlayer = createAudioPlayer({ uri: previewUrl });
 
-        setSound(newSound);
-        setCachedSounds(prev => ({ ...prev, [voiceId]: newSound }));
+        setSound(newPlayer);
+        setCachedSounds(prev => ({ ...prev, [voiceId]: newPlayer }));
 
-        newSound.setOnPlaybackStatusUpdate((status) => {
+        const listener = newPlayer.addListener('playbackStatusUpdate', (status) => {
           if (status.isLoaded && status.didJustFinish) {
             setPlayingPreviewId(null);
+            newPlayer.seekTo(0);
           }
         });
+        (newPlayer as any)._statusListener = listener;
+
+        newPlayer.play();
       }
     } catch (error) {
       console.error('Error playing voice preview:', error);
@@ -104,7 +117,7 @@ export function useVoicePreview() {
 
   const playLivePreview = async (voiceId: string) => {
     if (sound) {
-      await sound.stopAsync().catch(console.error);
+      try { sound.pause(); } catch (e) { console.error(e); }
     }
 
     if (playingPreviewId === voiceId) {
@@ -121,26 +134,24 @@ export function useVoicePreview() {
       if (livePreviewIdRef.current !== voiceId) return;
       if (result.success && result.audioBase64) {
         const uri = `data:audio/mpeg;base64,${result.audioBase64}`;
-        await Audio.setAudioModeAsync({
-          playsInSilentModeIOS: true,
-          allowsRecordingIOS: false,
-          staysActiveInBackground: false,
+        await setAudioModeAsync({
+          playsInSilentMode: true,
+          allowsRecording: false,
+          shouldPlayInBackground: false,
         });
         if (livePreviewIdRef.current !== voiceId) return;
-        const { sound: newSound } = await Audio.Sound.createAsync(
-          { uri },
-          { shouldPlay: true }
-        );
+        const newPlayer = createAudioPlayer({ uri });
         if (livePreviewIdRef.current !== voiceId) {
-          newSound.unloadAsync().catch(console.error);
+          cleanupPlayer(newPlayer);
           return;
         }
-        setSound(newSound);
-        newSound.setOnPlaybackStatusUpdate((status) => {
+        setSound(newPlayer);
+        newPlayer.addListener('playbackStatusUpdate', (status) => {
           if (status.isLoaded && status.didJustFinish) {
             setPlayingPreviewId(prev => prev === voiceId ? null : prev);
           }
         });
+        newPlayer.play();
       } else {
         setPlayingPreviewId(prev => prev === voiceId ? null : prev);
       }
@@ -161,11 +172,8 @@ export function useVoicePreview() {
       .filter(v => v.previewUrl && !cachedSounds[v.voiceId])
       .map(async (voice) => {
         try {
-          const { sound: preloadedSound } = await Audio.Sound.createAsync(
-            { uri: voice.previewUrl! },
-            { shouldPlay: false }
-          );
-          return { voiceId: voice.voiceId, sound: preloadedSound };
+          const preloadedPlayer = createAudioPlayer({ uri: voice.previewUrl! });
+          return { voiceId: voice.voiceId, player: preloadedPlayer };
         } catch (error) {
           console.error(`Failed to preload audio for ${voice.name || voice.voiceId}:`, error);
           return null;
@@ -173,9 +181,9 @@ export function useVoicePreview() {
       });
 
     const results = await Promise.all(loadPromises);
-    const newSounds: Record<string, Audio.Sound> = {};
-    results.forEach(r => { if (r) newSounds[r.voiceId] = r.sound; });
-    setCachedSounds(prev => ({ ...prev, ...newSounds }));
+    const newPlayers: Record<string, AudioPlayer> = {};
+    results.forEach(r => { if (r) newPlayers[r.voiceId] = r.player; });
+    setCachedSounds(prev => ({ ...prev, ...newPlayers }));
   };
 
   return {

@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { X, Download, Mic, Music, Subtitles, MessageSquare, Loader2, Play, Pause, Info, Scissors } from 'lucide-react-native';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { X, Download, Mic, Music, Subtitles, MessageSquare, Loader2, Play, Pause, Info, Scissors, Clapperboard } from 'lucide-react-native';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Alert,
   ActivityIndicator,
@@ -18,11 +18,16 @@ import {
   LayoutChangeEvent,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as MediaLibrary from 'expo-media-library';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { useEvent } from 'expo';
-import { Audio } from 'expo-av';
+import {
+  createAudioPlayer,
+  setAudioModeAsync,
+  type AudioPlayer,
+} from 'expo-audio';
+
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import { useAction, useMutation, useQuery } from "convex/react";
@@ -55,6 +60,76 @@ const ICON_SHADOW = {
   elevation: 8,
 };
 
+// ─── Sequence Preview Types & Helpers ──────────────────────────────────────
+
+interface SeqSegment {
+  id: string;
+  file: string;
+  startFrom: number;
+  duration: number;
+}
+
+interface SeqCaption {
+  startTime: number;
+  endTime: number;
+  text: string;
+}
+
+function getSeqCacheDir(projectId?: string): string {
+  const base = `${FileSystem.cacheDirectory}seq-preview/`;
+  return projectId ? `${base}${projectId}/` : base;
+}
+
+async function cacheSeqAsset(remoteUrl: string, key: string, projectId?: string): Promise<string> {
+  // Extract extension from key (e.g. "video1.mp4"), not remoteUrl (Convex URLs have no extension)
+  // If key has no extension, infer: audio files from MiniMax are MP3, videos are MP4
+  let ext: string;
+  if (key.includes('.')) {
+    ext = key.split('.').pop()!;
+  } else if (key.includes('voice') || key.includes('music') || key.includes('audio')) {
+    ext = 'mp3';
+  } else {
+    ext = 'mp4';
+  }
+  const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const baseName = safeKey.replace(/\.[^.]+$/, '');
+  const filename = `${baseName}.${ext}`;
+
+  const dir = getSeqCacheDir(projectId);
+  const target = `${dir}${filename}`;
+
+  const info = await FileSystem.getInfoAsync(target);
+  if (info.exists) return target;
+
+  await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+  const downloaded = await FileSystem.downloadAsync(remoteUrl, target);
+  if (downloaded.status !== 200) {
+    throw new Error(`Download failed with status: ${downloaded.status}`);
+  }
+  return downloaded.uri;
+}
+
+function parseSrtToCaptions(srtContent: string): SeqCaption[] {
+  const caps: SeqCaption[] = [];
+  const lines = srtContent.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const timeLine = lines[i];
+    if (timeLine.includes('-->')) {
+      const [startStr, endStr] = timeLine.split('-->').map(t => t.trim());
+      const parseTime = (t: string) => {
+        const [h, m, rest] = t.split(':');
+        const [s, ms] = rest.split(',');
+        return parseInt(h) * 3600 + parseInt(m) * 60 + parseInt(s) + parseInt(ms) / 1000;
+      };
+      const text = lines[i + 1]?.trim() || '';
+      if (text) {
+        caps.push({ startTime: parseTime(startStr), endTime: parseTime(endStr), text });
+      }
+    }
+  }
+  return caps;
+}
+
 // Helper function to calculate generation phase from project data
 const getGenerationPhase = (project: any): GenerationPhase => {
   if (!project) return null;
@@ -86,7 +161,8 @@ const getGenerationPhase = (project: any): GenerationPhase => {
   }
   
   // Priority 2: Check if still preparing media assets (FAL animations, TTS, music)
-  const hasMediaAssets = project.audioUrl && project.musicUrl;
+  // Music is optional — generation may fail, but we can still render without it
+  const hasMediaAssets = project.audioUrl && project.videoUrls && project.videoUrls.length > 0;
   if (project.animationStatus === 'in_progress' || !hasMediaAssets) {
     return 'preparing_media';
   }
@@ -233,7 +309,11 @@ export default function VideoPreviewScreen() {
   );
   
   // Calculate if we're still generating based on live project data
-  const isGenerating = isGeneratingParam && (!project?.renderedVideoUrl || project?.status !== 'completed');
+  // NOTE: "rendering" status covers BOTH createSequence AND renderFinalVideo.
+  // If timelineJson + sandboxId already exist, createSequence is done —
+  // that's not "generating", it's "ready for preview/render".
+  const hasSequenceReady = !!(project?.timelineJson && project?.sandboxId);
+  const isGenerating = isGeneratingParam && !project?.renderedVideoUrl && !hasSequenceReady && project?.status !== 'completed';
   const generationPhase = isGenerating ? getGenerationPhase(project) : null;
   const phaseText = getPhaseText(generationPhase, project?.renderProgress);
   
@@ -278,6 +358,596 @@ export default function VideoPreviewScreen() {
     outputRange: ['0deg', '360deg'],
   });
 
+  // Render hooks — declared early so handleRender can reference them
+  const renderFinalVideo = useAction(api.render.renderFinalVideo);
+  const [renderState, setRenderState] = useState<'idle' | 'rendering' | null>(null);
+  const renderTriggeredRef = useRef(false);
+
+  // Manage render state based on project data
+  useEffect(() => {
+    if (!project) return;
+
+    // If video is already rendered, clear render state
+    if (project.renderedVideoUrl) {
+      setRenderState(null);
+      return;
+    }
+
+    // If currently rendering the FINAL video (user tapped Render), show rendering state.
+    // We detect this by renderProgress.step NOT being "sequence created" —
+    // because "sequence created" means createSequence just finished and we're idle.
+    // Also require that we're NOT in the idle state already (don't override user's Render tap).
+    if (project.status === 'rendering' && project.sandboxId && renderState === 'rendering') {
+      return;
+    }
+
+    // If sequence is ready (timelineJson + sandboxId) but not yet rendered, show idle render state.
+    // This applies regardless of status — createSequence sets status to "rendering" but sequence is ready.
+    if (project.timelineJson && project.sandboxId && project.status !== 'failed') {
+      setRenderState('idle');
+      return;
+    }
+
+    // Otherwise, not applicable
+    setRenderState(null);
+  }, [project?.renderedVideoUrl, project?.status, project?.sandboxId, project?.timelineJson]);
+
+  // Handle render button tap
+  const handleRender = useCallback(() => {
+    if (!projectId || renderTriggeredRef.current) return;
+
+    renderTriggeredRef.current = true;
+    setRenderState('rendering');
+
+    console.log('[video-preview] Starting final render for project:', projectId);
+    renderFinalVideo({ projectId })
+      .then((result) => {
+        if (!result?.success) {
+          console.error('[video-preview] Render failed:', result?.error);
+          Alert.alert('Render Failed', result?.error || 'Please try again.');
+          setRenderState('idle');
+          renderTriggeredRef.current = false;
+        } else {
+          console.log('[video-preview] Render completed:', result.renderedVideoUrl);
+        }
+      })
+      .catch((error) => {
+        console.error('[video-preview] Render error:', error);
+        Alert.alert('Render Error', `${error}`);
+        setRenderState('idle');
+        renderTriggeredRef.current = false;
+      });
+  }, [projectId, renderFinalVideo]);
+
+  // ─── Shared state (moved early for sequence preview references) ──────────
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [downloadSuccess, setDownloadSuccess] = useState(false);
+  const [isComposing, setIsComposing] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(true);
+  const [showControls, setShowControls] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [voiceoverEnabled, setVoiceoverEnabled] = useState(true);
+  const [musicEnabled, setMusicEnabled] = useState(true);
+  const [captionsEnabled, setCaptionsEnabled] = useState(true);
+
+  const resetControlsTimeout = useCallback(() => {
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+    }
+    controlsTimeoutRef.current = setTimeout(() => {
+      setShowControls(false);
+    }, 3000);
+  }, []);
+
+  // ─── Sequence Preview State ───────────────────────────────────────────────
+  // When sequence is ready (timelineJson + sandboxId) but not yet rendered,
+  // we play a client-side preview using the original video clips + audio tracks.
+
+  const getEditorData = useAction(api.tasks.getProjectEditorData);
+
+  // Sequence preview data
+  const [seqSegments, setSeqSegments] = useState<SeqSegment[]>([]);
+  const [seqClipUrls, setSeqClipUrls] = useState<Record<string, string>>({});
+  const [seqCaptions, setSeqCaptions] = useState<SeqCaption[]>([]);
+  const [seqTotalDuration, setSeqTotalDuration] = useState(0);
+  const [seqAudioSettings, setSeqAudioSettings] = useState<{
+    voiceVolume: number;
+    musicVolume: number;
+    originalSoundVolume: number;
+    includeVoice: boolean;
+    includeMusic: boolean;
+    includeCaptions: boolean;
+    includeOriginalSound: boolean;
+    voiceSpeed: number;
+  } | null>(null);
+  const [seqVoiceUrl, setSeqVoiceUrl] = useState<string | null>(null);
+  const [seqMusicUrl, setSeqMusicUrl] = useState<string | null>(null);
+  const [seqSrtContent, setSeqSrtContent] = useState<string | null>(null);
+
+  // Sequence playback state
+  const [seqPlayheadTime, setSeqPlayheadTime] = useState(0);
+  const [seqIsPlaying, setSeqIsPlaying] = useState(false);
+  const [seqIsReady, setSeqIsReady] = useState(false);
+  const seqPlayheadRef = useRef(0);
+  seqPlayheadRef.current = seqPlayheadTime;
+  const seqIsPlayingRef = useRef(false);
+  seqIsPlayingRef.current = seqIsPlaying;
+
+  // Sequence audio refs
+  const seqVoiceRef = useRef<AudioPlayer | null>(null);
+  const seqMusicRef = useRef<AudioPlayer | null>(null);
+
+  // Sequence video player
+  const seqLoadedUrlRef = useRef<string | null>(null);
+  const seqActiveSegIdRef = useRef<string | null>(null);
+  const seqAutoPlayedRef = useRef(false);
+
+  const isSequencePreview = !isGenerating && !videoUri && renderState === 'idle';
+
+  // Load editor data for sequence preview
+  useEffect(() => {
+    if (!isSequencePreview || !projectId) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const data = await getEditorData({ projectId });
+        if (cancelled) return;
+
+        console.log('[seq-preview] Editor data loaded:', {
+          hasTimeline: !!data.timeline,
+          segmentCount: data.timeline?.segments?.length ?? 0,
+          videoUrlCount: data.videoUrls?.length ?? 0,
+          hasSrt: !!data.srtContent,
+          hasVoice: !!data.voiceAudioUrl,
+          hasMusic: !!data.musicAudioUrl,
+        });
+
+        if (!data.timeline?.segments || data.timeline.segments.length === 0) {
+          console.warn('[seq-preview] No segments in timeline');
+          return;
+        }
+
+        // Parse segments
+        const parsed: SeqSegment[] = data.timeline.segments.map((s: any, i: number) => ({
+          id: `seg_${i}`,
+          file: s.file,
+          startFrom: s.startFrom || 0,
+          duration: s.duration,
+        }));
+
+        // Build clip URL map: video0.mp4 → videoUrls[0], video1.mp4 → videoUrls[1], etc.
+        // Also includes original uploaded videos appended after animated ones.
+        const urlMap: Record<string, string> = {};
+        const videoUrls = data.videoUrls || [];
+        // Build combined list: animated videoUrls first, then original video fileUrls
+        const allVideoUrls: string[] = [...videoUrls];
+        const fileUrls = (data as any).fileUrls || [];
+        const fileMetadata = (data as any).fileMetadata || [];
+        for (let i = 0; i < fileMetadata.length; i++) {
+          const meta = fileMetadata[i];
+          if (meta && fileUrls[i] && meta.contentType?.startsWith("video/")) {
+            allVideoUrls.push(fileUrls[i]);
+          }
+        }
+        for (let i = 0; i < parsed.length; i++) {
+          const seg = parsed[i];
+          if (!urlMap[seg.file]) {
+            // Extract index from "videoN.mp4" pattern
+            const match = seg.file.match(/^video(\d+)\./);
+            const idx = match ? parseInt(match[1]) : i;
+            if (allVideoUrls[idx]) {
+              urlMap[seg.file] = allVideoUrls[idx];
+            }
+          }
+        }
+
+        // Cache all unique clip URLs locally for smooth playback
+        const uniqueUrls = new Map<string, string[]>();
+        for (const [file, url] of Object.entries(urlMap)) {
+          if (!uniqueUrls.has(url)) uniqueUrls.set(url, []);
+          uniqueUrls.get(url)!.push(file);
+        }
+
+        const localUrlMap: Record<string, string> = {};
+        await Promise.all(
+          Array.from(uniqueUrls.entries()).map(async ([url, files]) => {
+            try {
+              const localUri = await cacheSeqAsset(url, files[0], projectId);
+              for (const f of files) localUrlMap[f] = localUri;
+            } catch (e) {
+              console.warn('[seq-preview] Failed to cache clip:', files[0], e);
+              for (const f of files) localUrlMap[f] = url;
+            }
+          })
+        );
+
+        if (cancelled) return;
+
+        let localVoiceUrl: string | null = null;
+        if (data.voiceAudioUrl) {
+          try { localVoiceUrl = await cacheSeqAsset(data.voiceAudioUrl, 'voice_audio', projectId); }
+          catch (e) { console.warn('[seq-audio] Voice cache failed, using remote:', e); localVoiceUrl = data.voiceAudioUrl; }
+        }
+        let localMusicUrl: string | null = null;
+        if (data.musicAudioUrl) {
+          try { localMusicUrl = await cacheSeqAsset(data.musicAudioUrl, 'music_audio', projectId); }
+          catch (e) { console.warn('[seq-audio] Music cache failed, using remote:', e); localMusicUrl = data.musicAudioUrl; }
+        }
+
+        if (cancelled) return;
+
+        const total = parsed.reduce((sum, s) => sum + s.duration, 0);
+
+        setSeqSegments(parsed);
+        setSeqClipUrls(localUrlMap);
+        setSeqTotalDuration(total);
+        setSeqVoiceUrl(localVoiceUrl);
+        setSeqMusicUrl(localMusicUrl);
+        setSeqSrtContent(data.srtContent || null);
+
+        // Parse captions from SRT
+        if (data.srtContent) {
+          setSeqCaptions(parseSrtToCaptions(data.srtContent));
+        }
+
+        // Audio settings from timeline
+        const tl = data.timeline;
+        setSeqAudioSettings({
+          voiceVolume: tl?.audio?.voiceVolume ?? data.voiceVolume ?? 1.0,
+          musicVolume: tl?.audio?.musicVolume ?? data.musicVolume ?? 0.1,
+          originalSoundVolume: tl?.audio?.originalSoundVolume ?? data.originalSoundVolume ?? 0.0,
+          includeVoice: tl?.audio?.includeVoice ?? data.includeVoice ?? true,
+          includeMusic: tl?.audio?.includeMusic ?? data.includeMusic ?? true,
+          includeCaptions: tl?.subtitles?.includeCaptions ?? data.includeCaptions ?? true,
+          includeOriginalSound: tl?.audio?.includeOriginalSound ?? data.includeOriginalSound ?? false,
+          voiceSpeed: tl?.audio?.playbackRate ?? data.voiceSpeed ?? 1.0,
+        });
+
+        // Initialize toggle states
+        setVoiceoverEnabled(tl?.audio?.includeVoice ?? data.includeVoice ?? true);
+        setMusicEnabled(tl?.audio?.includeMusic ?? data.includeMusic ?? true);
+        setCaptionsEnabled(tl?.subtitles?.includeCaptions ?? data.includeCaptions ?? true);
+
+        // Load audio players
+        await setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: false });
+
+        if (localVoiceUrl) {
+          try {
+            const player = createAudioPlayer({ uri: localVoiceUrl });
+            player.volume = tl?.audio?.voiceVolume ?? data.voiceVolume ?? 1.0;
+            const speed = tl?.audio?.playbackRate ?? data.voiceSpeed ?? 1.0;
+            if (speed !== 1.0) {
+              try { player.playbackRate = speed; player.shouldCorrectPitch = true; }
+              catch (_) { console.warn('[seq-preview] playbackRate failed'); }
+            }
+            player.pause();
+            if (!cancelled) {
+              seqVoiceRef.current = player;
+            } else {
+              player.remove();
+            }
+          } catch (e) { console.warn('[seq-preview] Failed to load voice:', e); }
+        }
+
+        if (localMusicUrl) {
+          try {
+            const player = createAudioPlayer({ uri: localMusicUrl });
+            player.volume = tl?.audio?.musicVolume ?? data.musicVolume ?? 0.1;
+            player.pause();
+            if (!cancelled) {
+              seqMusicRef.current = player;
+            } else {
+              player.remove();
+            }
+          } catch (e) { console.warn('[seq-preview] Failed to load music:', e); }
+        }
+
+        if (!cancelled) {
+          setSeqIsReady(true);
+          console.log('[seq-preview] Ready, total duration:', total);
+        }
+      } catch (e) {
+        console.error('[seq-preview] Failed to load editor data:', e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      seqVoiceRef.current?.remove();
+      seqMusicRef.current?.remove();
+      seqVoiceRef.current = null;
+      seqMusicRef.current = null;
+      setSeqIsReady(false);
+      setSeqIsPlaying(false);
+    };
+  }, [isSequencePreview, projectId, getEditorData]);
+
+  // Sequence preview: compute current segment from playhead time
+  const seqCurrentInfo = useMemo(() => {
+    let elapsed = 0;
+    for (let i = 0; i < seqSegments.length; i++) {
+      const seg = seqSegments[i];
+      const segEnd = elapsed + seg.duration;
+      const isLast = i === seqSegments.length - 1;
+      if (seqPlayheadTime >= elapsed && (isLast ? seqPlayheadTime <= segEnd : seqPlayheadTime < segEnd)) {
+        return {
+          segId: seg.id,
+          seekTime: seqPlayheadTime - elapsed + seg.startFrom,
+          url: seqClipUrls[seg.file] || null,
+        };
+      }
+      elapsed += seg.duration;
+    }
+    if (seqSegments.length > 0) {
+      const last = seqSegments[seqSegments.length - 1];
+      return { segId: last.id, seekTime: last.startFrom + last.duration, url: seqClipUrls[last.file] || null };
+    }
+    return null;
+  }, [seqSegments, seqPlayheadTime, seqClipUrls]);
+
+  // Sequence preview: current caption
+  const seqCurrentCaption = useMemo(() => {
+    return seqCaptions.find(c => seqPlayheadTime >= c.startTime && seqPlayheadTime <= c.endTime);
+  }, [seqCaptions, seqPlayheadTime]);
+
+  // Sequence video player (created once, source swapped via replaceAsync)
+  const seqInitialUrl = seqSegments.length > 0 ? (seqClipUrls[seqSegments[0].file] || null) : null;
+  const seqVideoPlayer = useVideoPlayer(
+    isSequencePreview ? seqInitialUrl : null,
+    (player) => {
+      if (player && seqInitialUrl) {
+        player.loop = false;
+        player.muted = !(seqAudioSettings?.includeOriginalSound);
+        seqLoadedUrlRef.current = seqInitialUrl;
+      }
+    }
+  );
+  const { status: seqPlayerStatus } = useEvent(seqVideoPlayer, 'statusChange', { status: seqVideoPlayer.status });
+
+  // Segment switching: when segment changes, seek or replace video source
+  useEffect(() => {
+    if (!isSequencePreview || !seqCurrentInfo || !seqVideoPlayer) return;
+    if (seqActiveSegIdRef.current === seqCurrentInfo.segId) return;
+
+    const targetUrl = seqCurrentInfo.url;
+    const needsSwitch = targetUrl && targetUrl !== seqLoadedUrlRef.current;
+
+    if (needsSwitch && targetUrl) {
+      seqActiveSegIdRef.current = seqCurrentInfo.segId;
+      seqLoadedUrlRef.current = targetUrl;
+      seqVideoPlayer.replaceAsync({ uri: targetUrl });
+    } else {
+      seqActiveSegIdRef.current = seqCurrentInfo.segId;
+      try {
+        seqVideoPlayer.currentTime = seqCurrentInfo.seekTime;
+        if (seqIsPlayingRef.current) seqVideoPlayer.play();
+      } catch {}
+    }
+  }, [seqCurrentInfo?.segId, seqVideoPlayer, isSequencePreview]);
+
+  // After source switch (replace), seek to correct position
+  useEffect(() => {
+    if (!isSequencePreview || !seqCurrentInfo || !seqVideoPlayer) return;
+    if (seqPlayerStatus !== 'readyToPlay') return;
+    try {
+      seqVideoPlayer.currentTime = seqCurrentInfo.seekTime;
+      if (seqIsPlayingRef.current) seqVideoPlayer.play();
+    } catch {}
+  }, [isSequencePreview, seqPlayerStatus]);
+
+  // Wall-clock playhead timer
+  useEffect(() => {
+    if (!isSequencePreview || !seqIsPlaying) {
+      seqIsPlayingRef.current = false;
+      return;
+    }
+    seqIsPlayingRef.current = true;
+
+    const startWall = Date.now();
+    const startPos = seqPlayheadRef.current;
+
+    const interval = setInterval(() => {
+      const elapsed = (Date.now() - startWall) / 1000;
+      const newTime = Math.min(startPos + elapsed, seqTotalDuration);
+      seqPlayheadRef.current = newTime;
+      setSeqPlayheadTime(newTime);
+    }, 50);
+
+    return () => clearInterval(interval);
+  }, [isSequencePreview, seqIsPlaying, seqTotalDuration]);
+
+  // Stop at end of timeline
+  useEffect(() => {
+    if (isSequencePreview && seqIsPlaying && seqPlayheadTime >= seqTotalDuration && seqTotalDuration > 0) {
+      try { seqVideoPlayer?.pause(); } catch {}
+      seqVoiceRef.current?.pause();
+      seqMusicRef.current?.pause();
+      setSeqIsPlaying(false);
+      seqIsPlayingRef.current = false;
+    }
+  }, [isSequencePreview, seqPlayheadTime, seqIsPlaying, seqTotalDuration, seqVideoPlayer]);
+
+  // Sync audio toggle volumes
+  useEffect(() => {
+    if (seqVoiceRef.current) {
+      seqVoiceRef.current.volume = voiceoverEnabled ? (seqAudioSettings?.voiceVolume ?? 1.0) : 0;
+    }
+  }, [voiceoverEnabled, seqAudioSettings]);
+
+  useEffect(() => {
+    if (seqMusicRef.current) {
+      seqMusicRef.current.volume = musicEnabled ? (seqAudioSettings?.musicVolume ?? 0.1) : 0;
+    }
+  }, [musicEnabled, seqAudioSettings]);
+
+  // Sync video player mute based on original sound setting
+  useEffect(() => {
+    if (seqVideoPlayer && seqAudioSettings) {
+      try {
+        seqVideoPlayer.muted = !(seqAudioSettings.includeOriginalSound);
+        seqVideoPlayer.volume = seqAudioSettings.includeOriginalSound ? seqAudioSettings.originalSoundVolume : 0;
+      } catch {}
+    }
+  }, [seqVideoPlayer, seqAudioSettings]);
+
+  // Sequence play/pause handler
+  const handleSeqPlayPause = useCallback(() => {
+    if (!seqVideoPlayer) return;
+
+    // Toggle controls visibility
+    setShowControls(true);
+    resetControlsTimeout();
+
+    if (seqIsPlaying) {
+      setSeqIsPlaying(false);
+      seqIsPlayingRef.current = false;
+      try { seqVideoPlayer.pause(); } catch {}
+      seqVoiceRef.current?.pause();
+      seqMusicRef.current?.pause();
+    } else {
+      let startTime = seqPlayheadRef.current;
+      let seekTime = seqCurrentInfo?.seekTime ?? 0;
+
+      if (startTime >= seqTotalDuration - 0.05) {
+        startTime = 0;
+        seqPlayheadRef.current = 0;
+        setSeqPlayheadTime(0);
+        seqActiveSegIdRef.current = null; // force re-evaluation
+        seekTime = seqSegments.length > 0 ? seqSegments[0].startFrom : 0;
+      }
+
+      setSeqIsPlaying(true);
+      seqIsPlayingRef.current = true;
+
+      if (seqCurrentInfo) {
+        try {
+          seqVideoPlayer.currentTime = seekTime;
+          seqVideoPlayer.play();
+        } catch {}
+      }
+
+      const posSec = seqPlayheadRef.current;
+      const speed = seqAudioSettings?.voiceSpeed ?? 1.0;
+      if (seqVoiceRef.current && voiceoverEnabled) {
+        seqVoiceRef.current.seekTo(posSec * speed).catch(() => {});
+        seqVoiceRef.current.play();
+      }
+      if (seqMusicRef.current && musicEnabled) {
+        seqMusicRef.current.seekTo(posSec).catch(() => {});
+        seqMusicRef.current.play();
+      }
+    }
+  }, [seqVideoPlayer, seqIsPlaying, seqTotalDuration, seqCurrentInfo, seqSegments, voiceoverEnabled, musicEnabled, seqAudioSettings, resetControlsTimeout]);
+
+  // Auto-play the sequence preview once, when the sequence is ready and the video player is ready
+  useEffect(() => {
+    if (!isSequencePreview || !seqIsReady || seqAutoPlayedRef.current) return;
+    if (seqPlayerStatus !== 'readyToPlay') return;
+    // Skip if the user already started/stopped playback manually before auto-play fired
+    if (seqIsPlayingRef.current) return;
+    seqAutoPlayedRef.current = true;
+    // Small delay so the player fully settles before starting playback
+    const t = setTimeout(() => {
+      handleSeqPlayPause();
+    }, 150);
+    return () => clearTimeout(t);
+  }, [isSequencePreview, seqIsReady, seqPlayerStatus, handleSeqPlayPause]);
+
+  // Render + download handler for sequence mode
+  const handleSeqDownload = useCallback(async () => {
+    if (!projectId) return;
+
+    // If not yet rendered, trigger render first
+    if (!project?.renderedVideoUrl) {
+      console.log('[seq-preview] Starting render before download');
+      setRenderState('rendering');
+      renderTriggeredRef.current = true;
+
+      try {
+        const result = await renderFinalVideo({ projectId });
+        if (!result?.success) {
+          console.error('[seq-preview] Render failed:', result?.error);
+          Alert.alert('Render Failed', result?.error || 'Please try again.');
+          setRenderState('idle');
+          renderTriggeredRef.current = false;
+          return;
+        }
+        console.log('[seq-preview] Render completed:', result.renderedVideoUrl);
+        // Now project.renderedVideoUrl will be available via the live query
+      } catch (error) {
+        console.error('[seq-preview] Render error:', error);
+        Alert.alert('Render Error', `${error}`);
+        setRenderState('idle');
+        renderTriggeredRef.current = false;
+        return;
+      }
+      // Wait for project query to update with renderedVideoUrl, then download
+      // The actual download happens in a separate effect when renderedVideoUrl appears
+      return;
+    }
+
+    // If already rendered, download directly
+    // This will be handled by the existing download flow when videoUri is set
+  }, [projectId, project?.renderedVideoUrl, renderFinalVideo]);
+
+  // When render completes in sequence mode, auto-download the video
+  useEffect(() => {
+    if (!isSequencePreview) return;
+    if (project?.renderedVideoUrl && renderTriggeredRef.current && renderState === null) {
+      // Render just completed, trigger download
+      console.log('[seq-preview] Render completed, starting download');
+      const doDownload = async () => {
+        try {
+          const url = project.renderedVideoUrl!;
+          const { status } = await MediaLibrary.requestPermissionsAsync();
+          if (status !== 'granted') {
+            Alert.alert('Permission Required', 'Please grant permission to save videos to your library.');
+            return;
+          }
+
+          setIsDownloading(true);
+          setDownloadProgress(0);
+
+          const fileUri = `${FileSystem.documentDirectory}reelfull_${Date.now()}.mp4`;
+          const downloadResumable = FileSystem.createDownloadResumable(
+            url, fileUri, {},
+            (progress) => {
+              if (progress.totalBytesExpectedToWrite > 0) {
+                setDownloadProgress(progress.totalBytesWritten / progress.totalBytesExpectedToWrite);
+              }
+            }
+          );
+          const result = await downloadResumable.downloadAsync();
+          if (!result || result.status !== 200) {
+            throw new Error(`Download failed with status: ${result?.status}`);
+          }
+
+          let fileUriToSave = result.uri;
+          if (fileUriToSave.startsWith('file://')) {
+            const safePath = `${FileSystem.documentDirectory}reelfull_${Date.now()}.mp4`;
+            await FileSystem.copyAsync({ from: fileUriToSave, to: safePath });
+            fileUriToSave = safePath;
+          }
+
+          await MediaLibrary.saveToLibraryAsync(fileUriToSave);
+          try { await FileSystem.deleteAsync(fileUriToSave, { idempotent: true }); } catch {}
+          setDownloadSuccess(true);
+        } catch (error) {
+          console.error('[seq-preview] Download error:', error);
+          Alert.alert('Error', 'Failed to download video. Please try again.');
+        } finally {
+          setIsDownloading(false);
+          renderTriggeredRef.current = false;
+        }
+      };
+      doDownload();
+    }
+  }, [isSequencePreview, project?.renderedVideoUrl, renderState]);
+
   // Check for cached video and start pre-caching when video URI changes
   useEffect(() => {
     if (!videoUri || isGenerating) {
@@ -317,30 +987,12 @@ export default function VideoPreviewScreen() {
     };
   }, [videoUri, projectId, isGenerating]);
 
-  // Local state
-  const [isDownloading, setIsDownloading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
-  const [downloadSuccess, setDownloadSuccess] = useState(false);
-  const [isComposing, setIsComposing] = useState(false);
-  
-  // Video playback state
-  const [isPlaying, setIsPlaying] = useState(true);
-  const [showControls, setShowControls] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  
   // Timeline scrubbing state
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubProgress, setScrubProgress] = useState(0);
   const timelineWidthRef = useRef(0);
   const timelineLeftRef = useRef(0);
   const wasPlayingBeforeScrub = useRef(false);
-  
-  // Video option toggles
-  const [voiceoverEnabled, setVoiceoverEnabled] = useState(true);
-  const [musicEnabled, setMusicEnabled] = useState(true);
-  const [captionsEnabled, setCaptionsEnabled] = useState(true);
 
   // Client-side preview: resolved URLs for base video, voice audio, music audio
   const [previewAssets, setPreviewAssets] = useState<{
@@ -362,8 +1014,8 @@ export default function VideoPreviewScreen() {
   const [voiceAvailable, setVoiceAvailable] = useState(true);
   const [musicAvailable, setMusicAvailable] = useState(true);
   const [captionsAvailable, setCaptionsAvailable] = useState(true);
-  const voiceSoundRef = useRef<Audio.Sound | null>(null);
-  const musicSoundRef = useRef<Audio.Sound | null>(null);
+  const voiceSoundRef = useRef<AudioPlayer | null>(null);
+  const musicSoundRef = useRef<AudioPlayer | null>(null);
   const audioLoadedRef = useRef({ voice: false, music: false });
   const [audioReady, setAudioReady] = useState(false);
   // One-time source switch: rendered video → base video (during initial load)
@@ -428,28 +1080,39 @@ export default function VideoPreviewScreen() {
   }, [projectId, isGenerating]);
 
   // Load separate audio tracks for client-side preview mixing
+  // Skip in sequence preview mode — it has its own audio loading logic
   useEffect(() => {
-    if (!previewAssets) return;
+    if (!previewAssets || isSequencePreview) return;
     let cancelled = false;
 
     const loadAudio = async () => {
-      await Audio.setAudioModeAsync({
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: false,
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        shouldPlayInBackground: false,
       });
 
       if (previewAssets.voiceAudioUrl && !audioLoadedRef.current.voice) {
         try {
-          const { sound } = await Audio.Sound.createAsync(
-            { uri: previewAssets.voiceAudioUrl },
-            { shouldPlay: false, volume: previewAssets.voiceVolume ?? 1.0, rate: previewAssets.voiceSpeed, shouldCorrectPitch: true }
-          );
+          const player = createAudioPlayer({ uri: previewAssets.voiceAudioUrl });
+          player.volume = previewAssets.voiceVolume ?? 1.0;
+          // playbackRate is read-only on iOS native; only set when non-default
+          // and wrap in try-catch so the player is still assigned even if it fails
+          const speed = previewAssets.voiceSpeed ?? 1.0;
+          if (speed !== 1.0) {
+            try {
+              player.playbackRate = speed;
+              player.shouldCorrectPitch = true;
+            } catch (_) {
+              console.warn('[video-preview] playbackRate assignment failed, using default 1.0');
+            }
+          }
+          player.pause();
           if (!cancelled) {
-            voiceSoundRef.current = sound;
+            voiceSoundRef.current = player;
             audioLoadedRef.current.voice = true;
             console.log('[video-preview] Voice audio loaded');
           } else {
-            sound.unloadAsync();
+            player.remove();
           }
         } catch (e) {
           console.warn('[video-preview] Failed to load voice audio:', e);
@@ -458,16 +1121,15 @@ export default function VideoPreviewScreen() {
 
       if (previewAssets.musicAudioUrl && !audioLoadedRef.current.music) {
         try {
-          const { sound } = await Audio.Sound.createAsync(
-            { uri: previewAssets.musicAudioUrl },
-            { shouldPlay: false, volume: previewAssets.musicVolume ?? 0.1 }
-          );
+          const player = createAudioPlayer({ uri: previewAssets.musicAudioUrl });
+          player.volume = previewAssets.musicVolume ?? 0.1;
+          player.pause();
           if (!cancelled) {
-            musicSoundRef.current = sound;
+            musicSoundRef.current = player;
             audioLoadedRef.current.music = true;
             console.log('[video-preview] Music audio loaded');
           } else {
-            sound.unloadAsync();
+            player.remove();
           }
         } catch (e) {
           console.warn('[video-preview] Failed to load music audio:', e);
@@ -482,8 +1144,8 @@ export default function VideoPreviewScreen() {
     return () => {
       cancelled = true;
       setAudioReady(false);
-      voiceSoundRef.current?.unloadAsync();
-      musicSoundRef.current?.unloadAsync();
+      voiceSoundRef.current?.remove();
+      musicSoundRef.current?.remove();
       voiceSoundRef.current = null;
       musicSoundRef.current = null;
       audioLoadedRef.current = { voice: false, music: false };
@@ -572,27 +1234,27 @@ export default function VideoPreviewScreen() {
 
   // Sync separate audio tracks with the video player
   const syncAudioPlayState = useCallback(async (playing: boolean) => {
-    const currentTimeMs = (videoPlayer?.currentTime || 0) * 1000;
+    const currentTimeSec = videoPlayer?.currentTime || 0;
 
     if (voiceoverEnabled && voiceSoundRef.current) {
       try {
-        await voiceSoundRef.current.setPositionAsync(currentTimeMs);
-        if (playing) await voiceSoundRef.current.playAsync();
-        else await voiceSoundRef.current.pauseAsync();
+        voiceSoundRef.current.seekTo(currentTimeSec);
+        if (playing) voiceSoundRef.current.play();
+        else voiceSoundRef.current.pause();
       } catch (_) {}
     } else {
-      try { await voiceSoundRef.current?.pauseAsync(); } catch (_) {}
+      try { voiceSoundRef.current?.pause(); } catch (_) {}
     }
 
     if (musicEnabled && musicSoundRef.current) {
       try {
-        await musicSoundRef.current.setVolumeAsync(previewAssets?.musicVolume ?? 0.1);
-        await musicSoundRef.current.setPositionAsync(currentTimeMs);
-        if (playing) await musicSoundRef.current.playAsync();
-        else await musicSoundRef.current.pauseAsync();
+        musicSoundRef.current.volume = previewAssets?.musicVolume ?? 0.1;
+        musicSoundRef.current.seekTo(currentTimeSec);
+        if (playing) musicSoundRef.current.play();
+        else musicSoundRef.current.pause();
       } catch (_) {}
     } else {
-      try { await musicSoundRef.current?.pauseAsync(); } catch (_) {}
+      try { musicSoundRef.current?.pause(); } catch (_) {}
     }
   }, [voiceoverEnabled, musicEnabled, videoPlayer, previewAssets?.musicVolume]);
 
@@ -636,8 +1298,8 @@ export default function VideoPreviewScreen() {
     } else if (isDefaultVariant) {
       // Still on rendered video, all defaults — use baked audio
       videoPlayer.muted = false;
-      voiceSoundRef.current?.pauseAsync().catch(() => {});
-      musicSoundRef.current?.pauseAsync().catch(() => {});
+      voiceSoundRef.current?.pause();
+      musicSoundRef.current?.pause();
     } else {
       // Still on rendered video but user toggled before base loaded — mute & use separate audio
       // Must stay muted because the rendered video's audio is a pre-mixed composite (voice + music + original sound)
@@ -653,14 +1315,13 @@ export default function VideoPreviewScreen() {
 
     const interval = setInterval(async () => {
       if (!videoPlayer.playing) return;
-      const videoMs = videoPlayer.currentTime * 1000;
+      const videoSec = videoPlayer.currentTime;
 
-      const drift = async (sound: Audio.Sound | null) => {
-        if (!sound) return;
+      const drift = async (player: AudioPlayer | null) => {
+        if (!player) return;
         try {
-          const s = await sound.getStatusAsync();
-          if (s.isLoaded && s.isPlaying && Math.abs(s.positionMillis - videoMs) > 400) {
-            await sound.setPositionAsync(videoMs);
+          if (player.playing && Math.abs(player.currentTime - videoSec) > 0.4) {
+            player.seekTo(videoSec);
           }
         } catch (_) {}
       };
@@ -719,16 +1380,6 @@ export default function VideoPreviewScreen() {
       setProgress(videoPlayer.currentTime / videoPlayer.duration);
     }
   }, [showControls, videoPlayer, isScrubbing]);
-  
-  // Auto-hide controls after 3 seconds
-  const resetControlsTimeout = useCallback(() => {
-    if (controlsTimeoutRef.current) {
-      clearTimeout(controlsTimeoutRef.current);
-    }
-    controlsTimeoutRef.current = setTimeout(() => {
-      setShowControls(false);
-    }, 3000);
-  }, []);
   
   // Handle tap on video: toggle play/pause and sync separate audio tracks
   const handleVideoTap = useCallback(() => {
@@ -970,8 +1621,11 @@ export default function VideoPreviewScreen() {
   }, [userId, completeVideoPreviewTips, videoPlayer, isDefaultVariant, syncAudioPlayState]);
 
   const handleClose = () => {
-    voiceSoundRef.current?.stopAsync().catch(() => {});
-    musicSoundRef.current?.stopAsync().catch(() => {});
+    voiceSoundRef.current?.pause();
+    musicSoundRef.current?.pause();
+    seqVoiceRef.current?.pause();
+    seqMusicRef.current?.pause();
+    try { seqVideoPlayer?.pause(); } catch {}
     if (isTestMode) {
       router.replace('/(tabs)');
     } else {
@@ -1114,16 +1768,28 @@ export default function VideoPreviewScreen() {
         }
         
         console.log('[Download] Saving to media library...');
-        const asset = await MediaLibrary.createAssetAsync(fileUriToSave);
-        
-        // Try to create album, but don't fail if it doesn't work (e.g., limited access)
-        try {
-          await MediaLibrary.createAlbumAsync('Reelful', asset, false);
-        } catch (albumError) {
-          // Album creation can fail with limited access, but the asset is still saved
-          console.log('[Download] Album creation skipped (limited access):', albumError);
+        console.log('[Download] File URI:', fileUriToSave);
+        console.log('[Download] File URI starts with file://:', fileUriToSave.startsWith('file://'));
+
+        // The cache directory may have restricted permissions on iOS.
+        // Copy to documentDirectory first for a reliable, accessible file path.
+        if (fileUriToSave.startsWith('file://')) {
+          const safePath = `${FileSystem.documentDirectory}reelfull_${Date.now()}.mp4`;
+          console.log('[Download] Copying from cache to:', safePath);
+          await FileSystem.copyAsync({ from: fileUriToSave, to: safePath });
+          fileUriToSave = safePath;
+          console.log('[Download] Copy complete, file ready at:', fileUriToSave);
         }
-        
+
+        // Use saveToLibraryAsync — simpler than createAssetAsync, doesn't require
+        // the asset to remain accessible after saving.
+        console.log('[Download] Calling saveToLibraryAsync...');
+        await MediaLibrary.saveToLibraryAsync(fileUriToSave);
+        console.log('[Download] saveToLibraryAsync completed!');
+
+        // Clean up the temp copy
+        try { await FileSystem.deleteAsync(fileUriToSave, { idempotent: true }); } catch (_) {}
+
         setDownloadSuccess(true);
       }
     } catch (error) {
@@ -1151,8 +1817,8 @@ export default function VideoPreviewScreen() {
       if (captionPlayer) {
         captionPlayer.pause();
       }
-      voiceSoundRef.current?.pauseAsync().catch(() => {});
-      musicSoundRef.current?.pauseAsync().catch(() => {});
+      voiceSoundRef.current?.pause();
+      musicSoundRef.current?.pause();
       router.push({
         pathname: '/chat-composer',
         params: { projectId, fromVideo: 'true' },
@@ -1168,8 +1834,11 @@ export default function VideoPreviewScreen() {
       if (captionPlayer) {
         captionPlayer.pause();
       }
-      voiceSoundRef.current?.pauseAsync().catch(() => {});
-      musicSoundRef.current?.pauseAsync().catch(() => {});
+      voiceSoundRef.current?.pause();
+      musicSoundRef.current?.pause();
+      try { seqVideoPlayer?.pause(); } catch {}
+      seqVoiceRef.current?.pause();
+      seqMusicRef.current?.pause();
       router.push({
         pathname: '/video-editor' as any,
         params: { projectId },
@@ -1211,9 +1880,213 @@ export default function VideoPreviewScreen() {
     );
   }
 
-  // If no video URI and not generating, show loading state (thumbnail + close)
-  // instead of an error — the Convex query may still resolve the video URL
+  // If no video URI and not generating, show render-ready or loading state
   if (!videoUri && !isGenerating) {
+    // ── Sequence preview state: client-side playback of original clips ──
+    if (renderState === 'idle') {
+      return (
+        <View style={styles.container}>
+          <View style={styles.fullscreenVideo}>
+            {seqIsReady && seqCurrentInfo?.url ? (
+              <TouchableWithoutFeedback onPress={handleSeqPlayPause}>
+                <View style={StyleSheet.absoluteFill}>
+                  <VideoView
+                    player={seqVideoPlayer}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="cover"
+                    nativeControls={false}
+                  />
+                  {/* Caption overlay */}
+                  {captionsEnabled && seqCurrentCaption && (
+                    <View style={styles.seqCaptionOverlay}>
+                      <Text style={styles.seqCaptionText}>
+                        {seqCurrentCaption.text}
+                      </Text>
+                    </View>
+                  )}
+                  {/* Play/Pause indicator */}
+                  {showControls && (
+                    <View style={styles.playPauseOverlay} pointerEvents="none">
+                      <View style={styles.playPauseIcon}>
+                        {seqIsPlaying ? (
+                          <Pause size={48} color={Colors.white} strokeWidth={2} fill={Colors.white} />
+                        ) : (
+                          <Play size={48} color={Colors.white} strokeWidth={2} fill={Colors.white} />
+                        )}
+                      </View>
+                    </View>
+                  )}
+                  {/* Loading indicator while assets are loading or segment is switching */}
+                  {seqPlayerStatus !== 'readyToPlay' && (
+                    <View style={styles.seqLoadingOverlay} pointerEvents="none">
+                      <ActivityIndicator size="large" color={Colors.white} />
+                    </View>
+                  )}
+                </View>
+              </TouchableWithoutFeedback>
+            ) : (
+              <>
+                {effectiveThumbnailUrl ? (
+                  <Image
+                    source={{ uri: effectiveThumbnailUrl }}
+                    style={styles.generatingThumbnail}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View style={styles.generatingPlaceholder} />
+                )}
+                <View style={styles.generatingOverlay}>
+                  <Animated.View style={{ transform: [{ rotate: spin }] }}>
+                    <Loader2 size={48} color={Colors.ember} strokeWidth={2} />
+                  </Animated.View>
+                  <Text style={styles.generatingPhaseText}>Loading Preview</Text>
+                  <Text style={styles.generatingSubtitleText}>Preparing your video clips for preview...</Text>
+                </View>
+              </>
+            )}
+          </View>
+
+          {/* Top controls */}
+          <View style={[styles.topControls, { paddingTop: insets.top + 16 }]}>
+            <IconButton onPress={handleClose}>
+              <X size={28} color={Colors.white} strokeWidth={2.5} />
+            </IconButton>
+          </View>
+
+          {/* Right sidebar - Download and Edit buttons */}
+          {seqIsReady && (
+            <View style={[styles.rightSidebar, { bottom: insets.bottom + 120 }]}>
+              {/* Download button (triggers render + download) */}
+              <View ref={downloadButtonRef} collapsable={false}>
+                <SidebarButton
+                  onPress={handleSeqDownload}
+                  disabled={isDownloading}
+                >
+                  {isDownloading ? (
+                    <View style={{ alignItems: 'center' }}>
+                      <ActivityIndicator size="small" color={Colors.white} />
+                      {downloadProgress > 0 && downloadProgress < 1 && (
+                        <Text style={{ color: Colors.white, fontSize: 10, marginTop: 2, fontFamily: Fonts.medium }}>
+                          {Math.round(downloadProgress * 100)}%
+                        </Text>
+                      )}
+                    </View>
+                  ) : (
+                    <Download size={26} color={Colors.white} strokeWidth={2} />
+                  )}
+                </SidebarButton>
+              </View>
+
+              {/* Toggle group */}
+              <View ref={togglesGroupRef} collapsable={false} style={styles.togglesGroup}>
+                <SidebarButton
+                  onPress={() => setVoiceoverEnabled(!voiceoverEnabled)}
+                >
+                  <Mic
+                    size={26}
+                    color={voiceoverEnabled ? Colors.white : "rgba(255,255,255,0.5)"}
+                    strokeWidth={2}
+                  />
+                </SidebarButton>
+                <SidebarButton
+                  onPress={() => setMusicEnabled(!musicEnabled)}
+                >
+                  <Music
+                    size={26}
+                    color={musicEnabled ? Colors.white : "rgba(255,255,255,0.5)"}
+                    strokeWidth={2}
+                  />
+                </SidebarButton>
+                <SidebarButton
+                  onPress={() => setCaptionsEnabled(!captionsEnabled)}
+                >
+                  <Subtitles
+                    size={26}
+                    color={captionsEnabled ? Colors.white : "rgba(255,255,255,0.5)"}
+                    strokeWidth={2}
+                  />
+                </SidebarButton>
+              </View>
+
+              {/* Edit button */}
+              {projectId && (
+                <SidebarButton onPress={handleOpenEditor}>
+                  <Scissors size={26} color={Colors.white} strokeWidth={2} />
+                </SidebarButton>
+              )}
+            </View>
+          )}
+
+          {/* Progress bar */}
+          {seqIsReady && showControls && (
+            <View
+              style={[styles.timelineContainer, { bottom: insets.bottom + 40 }]}
+            >
+              <View style={styles.timelineTouchArea}>
+                <View style={styles.timelineTrack}>
+                  <View
+                    style={[
+                      styles.timelineProgress,
+                      { width: `${seqTotalDuration > 0 ? (seqPlayheadTime / seqTotalDuration) * 100 : 0}%` }
+                    ]}
+                  />
+                </View>
+              </View>
+            </View>
+          )}
+
+          {/* Download success toast */}
+          <Animated.View
+            style={[
+              styles.toast,
+              { opacity: toastOpacity, top: insets.top + 60 }
+            ]}
+            pointerEvents="none"
+          >
+            <BlurView intensity={40} tint="dark" style={styles.toastBlur}>
+              <Text style={styles.toastText}>This video was saved to camera roll</Text>
+            </BlurView>
+          </Animated.View>
+        </View>
+      );
+    }
+
+    // ── Rendering state: renderFinalVideo in progress ──
+    if (renderState === 'rendering') {
+      return (
+        <View style={styles.container}>
+          <View style={styles.fullscreenVideo}>
+            {effectiveThumbnailUrl ? (
+              <Image
+                source={{ uri: effectiveThumbnailUrl }}
+                style={styles.generatingThumbnail}
+                resizeMode="cover"
+              />
+            ) : (
+              <View style={styles.generatingPlaceholder} />
+            )}
+            <View style={styles.generatingOverlay}>
+              <Animated.View style={{ transform: [{ rotate: spin }] }}>
+                <Loader2 size={48} color={Colors.ember} strokeWidth={2} />
+              </Animated.View>
+              <Text style={styles.generatingPhaseText}>Rendering Video</Text>
+              <Text style={styles.generatingSubtitleText}>{project?.renderProgress?.step || 'Rendering your video...'}{"\n"}This takes a few minutes. You can leave the app.</Text>
+              <Text style={styles.generatingHintText}>Video takes a couple of minutes to render.{'\n'}You can leave the app.</Text>
+            </View>
+          </View>
+
+          {/* Top controls */}
+          <View style={[styles.topControls, { paddingTop: insets.top + 16 }]}>
+            <IconButton onPress={handleClose}>
+              <X size={28} color={Colors.white} strokeWidth={2.5} />
+            </IconButton>
+            <View style={styles.topControlsRight} />
+          </View>
+        </View>
+      );
+    }
+
+    // ── Default: loading state (Convex query may still resolve) ──
     return (
       <View style={styles.container}>
         <View style={styles.fullscreenVideo}>
@@ -1306,7 +2179,7 @@ export default function VideoPreviewScreen() {
             
             {/* Play/Pause indicator overlay - shows briefly when toggling */}
             {showControls && isVideoReady && (
-              <View style={styles.playPauseOverlay}>
+              <View style={styles.playPauseOverlay} pointerEvents="none">
                 <View style={styles.playPauseIcon}>
                   {isPlaying ? (
                     <Pause size={48} color={Colors.white} strokeWidth={2} fill={Colors.white} />
@@ -1553,7 +2426,11 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   playPauseOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -1659,5 +2536,48 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 10,
+  },
+  renderButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    borderRadius: 100,
+  },
+  renderButtonText: {
+    fontSize: 16,
+    fontFamily: Fonts.medium,
+    color: Colors.white,
+  },
+  // ─── Sequence Preview Styles ──────────────────────────────────────────
+  seqCaptionOverlay: {
+    position: 'absolute',
+    bottom: 120,
+    left: 20,
+    right: 20,
+    alignItems: 'center',
+    paddingHorizontal: 16,
+  },
+  seqCaptionText: {
+    color: Colors.white,
+    fontSize: 17,
+    fontFamily: Fonts.interSemiBold,
+    fontWeight: '600',
+    textAlign: 'center',
+    textShadowColor: 'rgba(0, 0, 0, 0.9)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+    letterSpacing: -0.5,
+  },
+  seqLoadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
   },
 });

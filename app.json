@@ -68,9 +68,7 @@
     "plugins": [
       [
         "expo-router",
-        {
-          "origin": "https://rork.com/"
-        }
+        {}
       ],
       [
         "expo-notifications",
@@ -118,9 +116,6 @@
       "typedRoutes": true
     },
     "extra": {
-      "router": {
-        "origin": "https://rork.com/"
-      },
       "eas": {
         "projectId": "b3b0f220-6056-4d93-8503-cb9798c67f3f"
       }

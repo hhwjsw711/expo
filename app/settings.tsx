@@ -17,7 +17,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { Audio } from 'expo-av';
+import {
+  createAudioPlayer,
+  setAudioModeAsync,
+  type AudioPlayer,
+} from 'expo-audio';
 import Colors from '@/constants/colors';
 import { useVoicePreview } from '@/hooks/useVoicePreview';
 import { useApp } from '@/contexts/AppContext';
@@ -110,7 +114,7 @@ export default function SettingsScreen() {
   useEffect(() => {
     return () => {
       if (sound) {
-        sound.unloadAsync().catch(console.error);
+        sound.remove();
       }
     };
   }, [sound]);
@@ -169,27 +173,26 @@ export default function SettingsScreen() {
   const playPreviewAudio = useCallback(async (url: string) => {
     try {
       // Set audio mode to play in silent mode
-      await Audio.setAudioModeAsync({
-        playsInSilentModeIOS: true,
-        allowsRecordingIOS: false,
-        staysActiveInBackground: false,
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        allowsRecording: false,
+        shouldPlayInBackground: false,
       });
 
       // Load and play preview
-      const { sound: newSound } = await Audio.Sound.createAsync(
-        { uri: url },
-        { shouldPlay: true }
-      );
+      const newPlayer = createAudioPlayer({ uri: url });
 
-      setSound(newSound);
+      setSound(newPlayer);
 
-      newSound.setOnPlaybackStatusUpdate((status) => {
+      newPlayer.addListener('playbackStatusUpdate', (status) => {
         if (status.isLoaded && status.didJustFinish) {
           setPlayingPreviewId(null);
           setPreviewStorageId(null);
           setSound(null);
         }
       });
+
+      newPlayer.play();
     } catch (error) {
       console.error('Play preview error:', error);
       Alert.alert('Error', 'Failed to play preview');

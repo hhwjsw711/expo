@@ -19,11 +19,15 @@ import {
 } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { useEvent } from 'expo';
-import { Audio } from 'expo-av';
+import {
+  createAudioPlayer,
+  setAudioModeAsync,
+  type AudioPlayer,
+} from 'expo-audio';
 import * as VideoThumbnails from 'expo-video-thumbnails';
-import { Paths, File as FSFile, Directory as FSDirectory } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useAction, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import Colors from '@/constants/colors';
 import { Fonts } from '@/constants/typography';
@@ -307,25 +311,37 @@ function buildTimelineJson(state: EditorState, originalTimeline: any): string {
   }, null, 2);
 }
 
-function getCacheDir(projectId?: string): FSDirectory {
-  if (projectId) {
-    return new FSDirectory(new FSDirectory(Paths.cache, 'video-editor'), projectId);
-  }
-  return new FSDirectory(Paths.cache, 'video-editor');
+function getCacheDir(projectId?: string): string {
+  const base = `${FileSystem.cacheDirectory}video-editor/`;
+  return projectId ? `${base}${projectId}/` : base;
 }
 
 async function cacheAsset(remoteUrl: string, key: string, projectId?: string): Promise<string> {
-  const ext = remoteUrl.split('?')[0].split('.').pop() || 'mp4';
+  // Extract extension from key (e.g. "video1.mp4"), not remoteUrl (Convex URLs have no extension)
+  // If key has no extension, infer: audio files from MiniMax are MP3, videos are MP4
+  let ext: string;
+  if (key.includes('.')) {
+    ext = key.split('.').pop()!;
+  } else if (key.includes('voice') || key.includes('music') || key.includes('audio')) {
+    ext = 'mp3';
+  } else {
+    ext = 'mp4';
+  }
   const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const filename = `${safeKey}.${ext}`;
+  const baseName = safeKey.replace(/\.[^.]+$/, '');
+  const filename = `${baseName}.${ext}`;
 
   const dir = getCacheDir(projectId);
-  const target = new FSFile(dir, filename);
+  const target = `${dir}${filename}`;
 
-  if (target.exists) return target.uri;
+  const info = await FileSystem.getInfoAsync(target);
+  if (info.exists) return target;
 
-  if (!dir.exists) dir.create({ intermediates: true });
-  const downloaded = await FSFile.downloadFileAsync(remoteUrl, target);
+  await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+  const downloaded = await FileSystem.downloadAsync(remoteUrl, target);
+  if (downloaded.status !== 200) {
+    throw new Error(`Download failed with status: ${downloaded.status}`);
+  }
   return downloaded.uri;
 }
 
@@ -372,15 +388,11 @@ async function cacheAllAssets(
 
 async function probeMediaDuration(uri: string): Promise<number | null> {
   try {
-    const { sound, status } = await Audio.Sound.createAsync(
-      { uri },
-      { shouldPlay: false }
-    );
-    let duration: number | null = null;
-    if (status.isLoaded && status.durationMillis) {
-      duration = status.durationMillis / 1000;
-    }
-    await sound.unloadAsync();
+    const player = createAudioPlayer({ uri });
+    // Wait briefly for the player to load metadata
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const duration = player.duration > 0 ? player.duration : null;
+    player.remove();
     return duration;
   } catch {
     return null;
@@ -471,7 +483,7 @@ export default function VideoEditorScreen() {
     projectId ? { id: projectId } : "skip"
   );
   const getEditorData = useAction(api.tasks.getProjectEditorData);
-  const saveEditorChanges = useAction(api.tasks.saveEditorChanges);
+  const saveEditorChanges = useMutation(api.tasks.saveEditorChanges);
   const { addVideo } = useApp();
 
   // ── Loading & data ──
@@ -523,8 +535,8 @@ export default function VideoEditorScreen() {
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
 
   // ── Refs ──
-  const voiceSoundRef = useRef<Audio.Sound | null>(null);
-  const musicSoundRef = useRef<Audio.Sound | null>(null);
+  const voiceSoundRef = useRef<AudioPlayer | null>(null);
+  const musicSoundRef = useRef<AudioPlayer | null>(null);
   const scrollRef = useRef<ScrollView>(null);
   const scrollOffsetRef = useRef(0);
   const isPlayingRef = useRef(false);
@@ -690,13 +702,13 @@ export default function VideoEditorScreen() {
 
   useEffect(() => {
     if (voiceSoundRef.current) {
-      voiceSoundRef.current.setVolumeAsync(voiceoverEnabled ? voiceoverVolume : 0).catch(() => {});
+      voiceSoundRef.current.volume = voiceoverEnabled ? voiceoverVolume : 0;
     }
   }, [voiceoverEnabled, voiceoverVolume]);
 
   useEffect(() => {
     if (musicSoundRef.current) {
-      musicSoundRef.current.setVolumeAsync(musicEnabled ? musicVolume : 0).catch(() => {});
+      musicSoundRef.current.volume = musicEnabled ? musicVolume : 0;
     }
   }, [musicEnabled, musicVolume]);
 
@@ -740,8 +752,8 @@ export default function VideoEditorScreen() {
   useEffect(() => {
     if (isPlaying && playheadTime >= totalDuration && totalDuration > 0) {
       try { videoPlayer?.pause(); } catch {}
-      voiceSoundRef.current?.pauseAsync().catch(() => {});
-      musicSoundRef.current?.pauseAsync().catch(() => {});
+      voiceSoundRef.current?.pause();
+      musicSoundRef.current?.pause();
       setIsPlaying(false);
       isPlayingRef.current = false;
     }
@@ -777,9 +789,20 @@ export default function VideoEditorScreen() {
           duration: data.timeline?.durationInSeconds ?? data.duration,
         });
 
-        // Build the unified clip URL map (original clips + fallbacks)
+        // Build the unified clip URL map (original clips + videoUrls mapping + fallbacks)
         const allClipUrls: Record<string, string> = { ...data.clipUrls };
         const videoFallback = data.baseVideoUrl || data.renderedVideoUrl;
+
+        // Build combined videoUrls list: animated videoUrls + original uploaded videos
+        const allVideoUrls: string[] = [...(data.videoUrls || [])];
+        const editorFileUrls = (data as any).fileUrls || [];
+        const editorFileMetadata = (data as any).fileMetadata || [];
+        for (let i = 0; i < editorFileMetadata.length; i++) {
+          const meta = editorFileMetadata[i];
+          if (meta && editorFileUrls[i] && meta.contentType?.startsWith("video/")) {
+            allVideoUrls.push(editorFileUrls[i]);
+          }
+        }
 
         // ── Parse segments ──
         let parsedSegments: TimelineSegment[] = [];
@@ -794,7 +817,18 @@ export default function VideoEditorScreen() {
             comment: s.comment || '',
           }));
 
-          // Fill in missing clip URLs from fallback
+          // Map videoN.mp4 → allVideoUrls[N] for segments not in clipUrls
+          for (const seg of parsedSegments) {
+            if (!allClipUrls[seg.file]) {
+              const match = seg.file.match(/^video(\d+)\./);
+              const idx = match ? parseInt(match[1]) : -1;
+              if (idx >= 0 && allVideoUrls[idx]) {
+                allClipUrls[seg.file] = allVideoUrls[idx];
+              }
+            }
+          }
+
+          // Fill in remaining missing clip URLs from fallback
           if (videoFallback) {
             for (const seg of parsedSegments) {
               if (!allClipUrls[seg.file]) {
@@ -883,7 +917,7 @@ export default function VideoEditorScreen() {
         }
 
         // ── Load audio & probe durations ──
-        await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, staysActiveInBackground: false });
+        await setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: false });
 
         const editorVoiceSpeed = data.voiceSpeed ?? 1.0;
         setVoiceSpeed(editorVoiceSpeed);
@@ -891,16 +925,22 @@ export default function VideoEditorScreen() {
         const voiceUri = localVoiceUrl || data.voiceAudioUrl;
         if (voiceUri) {
           try {
-            const { sound, status } = await Audio.Sound.createAsync(
-              { uri: voiceUri },
-              { shouldPlay: false, volume: 1.0 }
-            );
-            voiceSoundRef.current = sound;
+            const player = createAudioPlayer({ uri: voiceUri });
+            player.volume = 1.0;
+            player.pause();
+            voiceSoundRef.current = player;
             if (editorVoiceSpeed !== 1.0) {
-              await sound.setRateAsync(editorVoiceSpeed, true).catch(() => {});
+              try {
+                player.playbackRate = editorVoiceSpeed;
+                player.shouldCorrectPitch = true;
+              } catch (_) {
+                console.warn('[video-editor] playbackRate assignment failed, using default 1.0');
+              }
             }
-            if (status.isLoaded && status.durationMillis) {
-              setVoiceDuration(status.durationMillis / 1000 / editorVoiceSpeed);
+            // Wait briefly for metadata to load
+            await new Promise(resolve => setTimeout(resolve, 300));
+            if (player.duration > 0) {
+              setVoiceDuration(player.duration / editorVoiceSpeed);
             }
           } catch (e) {
             console.warn('[video-editor] Failed to load voice:', e);
@@ -910,13 +950,13 @@ export default function VideoEditorScreen() {
         const musicUri = localMusicUrl || data.musicAudioUrl;
         if (musicUri) {
           try {
-            const { sound, status } = await Audio.Sound.createAsync(
-              { uri: musicUri },
-              { shouldPlay: false, volume: data.musicVolume || 0.1 }
-            );
-            musicSoundRef.current = sound;
-            if (status.isLoaded && status.durationMillis) {
-              setMusicDuration(status.durationMillis / 1000);
+            const player = createAudioPlayer({ uri: musicUri });
+            player.volume = data.musicVolume || 0.1;
+            player.pause();
+            musicSoundRef.current = player;
+            await new Promise(resolve => setTimeout(resolve, 300));
+            if (player.duration > 0) {
+              setMusicDuration(player.duration);
             }
           } catch (e) {
             console.warn('[video-editor] Failed to load music:', e);
@@ -997,8 +1037,8 @@ export default function VideoEditorScreen() {
 
     return () => {
       cancelled = true;
-      voiceSoundRef.current?.unloadAsync();
-      musicSoundRef.current?.unloadAsync();
+      voiceSoundRef.current?.remove();
+      musicSoundRef.current?.remove();
     };
   }, [projectId]);
 
@@ -1063,8 +1103,8 @@ export default function VideoEditorScreen() {
       setIsPlaying(false);
       isPlayingRef.current = false;
       try { videoPlayer.pause(); } catch {}
-      voiceSoundRef.current?.pauseAsync().catch(() => {});
-      musicSoundRef.current?.pauseAsync().catch(() => {});
+      voiceSoundRef.current?.pause();
+      musicSoundRef.current?.pause();
     } else {
       // Clear selection so auto-scroll follows the playhead
       setSelectedClipId(null);
@@ -1093,14 +1133,14 @@ export default function VideoEditorScreen() {
         } catch {}
       }
 
-      const posMs = playheadTimeRef.current * 1000;
+      const posSec = playheadTimeRef.current;
       if (voiceSoundRef.current && voiceoverEnabled) {
-        await voiceSoundRef.current.setPositionAsync(posMs * voiceSpeed).catch(() => {});
-        await voiceSoundRef.current.playAsync().catch(() => {});
+        voiceSoundRef.current.seekTo(posSec * voiceSpeed).catch(() => {});
+        voiceSoundRef.current.play();
       }
       if (musicSoundRef.current && musicEnabled) {
-        await musicSoundRef.current.setPositionAsync(posMs).catch(() => {});
-        await musicSoundRef.current.playAsync().catch(() => {});
+        musicSoundRef.current.seekTo(posSec).catch(() => {});
+        musicSoundRef.current.play();
       }
     }
   }, [videoPlayer, isPlaying, playheadTime, totalDuration, voiceoverEnabled, musicEnabled, currentPreviewInfo, segments, voiceSpeed]);

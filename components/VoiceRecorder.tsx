@@ -1,14 +1,18 @@
 import { Mic, Square, Play, Pause, RotateCcw, Check } from 'lucide-react-native';
 import { useEffect, useState, useRef } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View, Alert } from 'react-native';
-import { Audio } from 'expo-av';
+import {
+  useAudioRecorder,
+  useAudioPlayer,
+  useAudioPlayerStatus,
+  createAudioPlayer,
+  setAudioModeAsync,
+  requestRecordingPermissionsAsync,
+  getRecordingPermissionsAsync,
+  RecordingPresets,
+  type AudioPlayer,
+} from 'expo-audio';
 import Colors from '@/constants/colors';
-
-// const SCRIPT_TEXT = `Morning rush? Meet your new ritual.
-// The new AromaBrew One brings the café to your kitchen — freshly ground beans, perfect temperature, and silky crema every single time.
-// Whether you crave a bold espresso or a smooth latte, it's ready in under a minute with just one touch.
-// Sleek, smart, and effortless — designed to fit your countertop and your lifestyle.
-// AromaBrew One. Wake up better.`;
 
 const SCRIPT_TEXT = `Wow, Reelful is such a cool app! It helps me turn my photos and videos into a ready-to-share clip using just one prompt. I don't need to record my voice, search for music, or spend hours editing. Reelful automatically adds voice-over, music, and captions. It makes content creation fast, fun, and effortless. I can't wait to use Reelful for my next video!`;
 
@@ -20,78 +24,61 @@ interface VoiceRecorderProps {
   disabled?: boolean;
 }
 
-export default function VoiceRecorder({ 
-  onRecordingComplete, 
+export default function VoiceRecorder({
+  onRecordingComplete,
   onBeforeRecord,
   initialRecordingUri,
   showScript = true,
   disabled = false,
 }: VoiceRecorderProps) {
-  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [recordingUri, setRecordingUri] = useState<string | undefined>(initialRecordingUri);
   const [isRecording, setIsRecording] = useState(false);
-  const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const [isPrepared, setIsPrepared] = useState(false);
+  const [player, setPlayer] = useState<AudioPlayer | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
-  const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const recordingRef = useRef<Audio.Recording | null>(null);
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const playerRef = useRef<AudioPlayer | null>(null);
 
-  // Keep refs in sync with state for cleanup
-  useEffect(() => { recordingRef.current = recording; }, [recording]);
-  useEffect(() => { soundRef.current = sound; }, [sound]);
+  // useAudioPlayer requires a fixed source at hook call time; we manage playback manually
+  // via createAudioPlayer for dynamic URIs (recording playback).
 
-  // Check permission status on mount (without requesting)
+  useEffect(() => { playerRef.current = player; }, [player]);
+
+  // Check permission status on mount
   useEffect(() => {
     const checkPermission = async () => {
-      const { status } = await Audio.getPermissionsAsync();
+      const { status } = await getRecordingPermissionsAsync();
       setHasPermission(status === 'granted');
     };
     checkPermission();
   }, []);
 
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      // Cleanup on unmount using refs for current values
-      if (durationIntervalRef.current) {
-        clearInterval(durationIntervalRef.current);
-      }
-      if (recordingRef.current) {
-        recordingRef.current.getStatusAsync().then((status) => {
-          if (status.isRecording || status.canRecord) {
-            recordingRef.current?.stopAndUnloadAsync().catch(console.error);
-          }
-        }).catch(console.error);
-      }
-      if (soundRef.current) {
-        soundRef.current.unloadAsync().catch(console.error);
-      }
+      if (durationIntervalRef.current) clearInterval(durationIntervalRef.current);
+      if (playerRef.current) playerRef.current.remove();
     };
-  }, []); // Empty deps - only run on unmount
+  }, []);
 
   const handleRecordPress = async () => {
-    // If already recording, stop it
     if (isRecording) {
       await stopRecording();
       return;
     }
 
-    // Check if we already have permission
     if (hasPermission) {
-      // Permission already granted, start recording
       await startRecording();
       return;
     }
 
-    // Need to request permission
     try {
-      const permission = await Audio.requestPermissionsAsync();
+      const permission = await requestRecordingPermissionsAsync();
       if (permission.granted) {
-        // Permission just granted - update state but DON'T start recording
-        // User needs to tap again to start recording
         setHasPermission(true);
-        // Don't start recording automatically - let user tap again
       } else {
         Alert.alert(
           'Permission Required',
@@ -107,88 +94,79 @@ export default function VoiceRecorder({
 
   const startRecording = async () => {
     try {
-      // Allow parent to clean up any loaded sounds that would conflict
-      // with the iOS audio session switch to recording mode
       if (onBeforeRecord) {
         await onBeforeRecord();
       }
 
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
+      await setAudioModeAsync({
+        allowsRecording: true,
+        playsInSilentMode: true,
       });
 
-      const { recording: newRecording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
+      // Clean up any playback player before recording
+      if (playerRef.current) {
+        playerRef.current.remove();
+        setPlayer(null);
+        setIsPlaying(false);
+      }
 
-      setRecording(newRecording);
+      await recorder.prepareToRecordAsync();
+      recorder.record();
       setIsRecording(true);
       setDuration(0);
+      setIsPrepared(true);
 
-      // Update duration while recording
       durationIntervalRef.current = setInterval(() => {
         setDuration((prev) => prev + 1);
       }, 1000);
-
-      newRecording.setOnRecordingStatusUpdate((status) => {
-        if (status.isDoneRecording && durationIntervalRef.current) {
-          clearInterval(durationIntervalRef.current);
-          durationIntervalRef.current = null;
-        }
-      });
     } catch (error) {
       console.error('Failed to start recording:', error);
       Alert.alert('Error', 'Failed to start recording. Please try again.');
+      setIsPrepared(false);
     }
   };
 
   const stopRecording = async () => {
-    if (!recording) return;
+    if (!isRecording) return;
 
     try {
       setIsRecording(false);
-      
-      // Clear the duration interval
+
       if (durationIntervalRef.current) {
         clearInterval(durationIntervalRef.current);
         durationIntervalRef.current = null;
       }
-      
-      const uri = recording.getURI();
-      await recording.stopAndUnloadAsync();
-      
-      // Clear recording state after unloading
-      setRecording(null);
+
+      await recorder.stop();
+      const uri = recorder.uri;
 
       if (uri) {
         setRecordingUri(uri);
       }
+      setIsPrepared(false);
     } catch (error) {
       console.error('Failed to stop recording:', error);
       Alert.alert('Error', 'Failed to stop recording. Please try again.');
-      setRecording(null); // Clear state even on error
+      setIsPrepared(false);
     }
   };
 
   const restartRecording = async () => {
-    // Stop and discard the current recording, then start fresh
-    if (recording) {
+    if (isRecording) {
       try {
-        await recording.stopAndUnloadAsync();
+        await recorder.stop();
       } catch (e) {
         console.error('Failed to stop recording for restart:', e);
       }
-      setRecording(null);
+      setIsRecording(false);
     }
     if (durationIntervalRef.current) {
       clearInterval(durationIntervalRef.current);
       durationIntervalRef.current = null;
     }
-    setIsRecording(false);
     setRecordingUri(undefined);
     setDuration(0);
-    // Start fresh recording after a short delay to let audio system settle
+    setIsPrepared(false);
     setTimeout(() => startRecording(), 100);
   };
 
@@ -196,38 +174,39 @@ export default function VoiceRecorder({
     if (!recordingUri) return;
 
     try {
-      if (sound && isPlaying) {
-        await sound.pauseAsync();
+      // If currently playing, pause
+      if (player && isPlaying) {
+        player.pause();
         setIsPlaying(false);
         return;
       }
 
-      if (sound && !isPlaying) {
-        await sound.playAsync();
+      // If player exists but paused, resume
+      if (player && !isPlaying) {
+        player.play();
         setIsPlaying(true);
         return;
       }
 
-      // Set audio mode to play in silent mode
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: false,
+      // Create new player
+      await setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+        shouldPlayInBackground: false,
       });
 
-      const { sound: newSound } = await Audio.Sound.createAsync(
-        { uri: recordingUri },
-        { shouldPlay: true }
-      );
-
-      setSound(newSound);
+      const newPlayer = createAudioPlayer({ uri: recordingUri });
+      setPlayer(newPlayer);
       setIsPlaying(true);
 
-      newSound.setOnPlaybackStatusUpdate((status) => {
+      newPlayer.addListener('playbackStatusUpdate', (status) => {
         if (status.isLoaded && status.didJustFinish) {
           setIsPlaying(false);
+          newPlayer.seekTo(0);
         }
       });
+
+      newPlayer.play();
     } catch (error) {
       console.error('Failed to play recording:', error);
       Alert.alert('Error', 'Failed to play recording. Please try again.');
@@ -235,15 +214,13 @@ export default function VoiceRecorder({
   };
 
   const resetRecording = async () => {
-    if (sound) {
-      await sound.unloadAsync().catch(console.error);
-      setSound(null);
+    if (player) {
+      player.remove();
+      setPlayer(null);
     }
-    // Reset audio mode to be ready for recording again
-    // (playRecording sets allowsRecordingIOS to false)
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS: true,
-      playsInSilentModeIOS: true,
+    await setAudioModeAsync({
+      allowsRecording: true,
+      playsInSilentMode: true,
     }).catch(console.error);
     setRecordingUri(undefined);
     setIsPlaying(false);
@@ -463,4 +440,3 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
 });
-

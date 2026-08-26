@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as MediaLibrary from 'expo-media-library';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -116,16 +116,11 @@ export default function ResultScreen() {
         const downloadResult = await FileSystem.downloadAsync(videoUrl, fileUri);
         
         if (downloadResult.status === 200) {
-          const asset = await MediaLibrary.createAssetAsync(downloadResult.uri);
-          
-          // Try to create album, but don't fail if it doesn't work (e.g., limited access)
-          try {
-            await MediaLibrary.createAlbumAsync('Reelful', asset, false);
-          } catch (albumError) {
-            // Album creation can fail with limited access, but the asset is still saved
-            console.log('[Download] Album creation skipped (limited access):', albumError);
-          }
-          
+          await MediaLibrary.saveToLibraryAsync(downloadResult.uri);
+
+          // Clean up the temp file
+          try { await FileSystem.deleteAsync(downloadResult.uri, { idempotent: true }); } catch (_) {}
+
           Alert.alert('Success', 'Video saved to your gallery!');
         } else {
           throw new Error('Download failed');

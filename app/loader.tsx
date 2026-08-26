@@ -15,14 +15,13 @@ export default function LoaderScreen() {
 
   // Get project data
   const project = useQuery(api.tasks.getProject, projectId ? { id: projectId } : "skip");
-  const renderVideo = useAction(api.render.renderVideo);
+  const createSequence = useAction(api.render.createSequence);
+  const renderTriggeredRef = useRef(false);
+  const renderStepRef = useRef<'sequence' | 'final' | null>(null);
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const rotateAnim = useRef(new Animated.Value(0)).current;
-  const renderTriggeredRef = useRef(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Timer effect - optimized to prevent unnecessary re-renders
   useEffect(() => {
     if (project?.submittedAt) {
       // Clear any existing timer
@@ -55,16 +54,20 @@ export default function LoaderScreen() {
     }
   }, [project?.submittedAt]);
 
-  // Auto-trigger render when ALL media assets are ready (matches studio page logic)
+  // Auto-trigger sequence creation when ALL media assets are ready
+  // NOTE: Previously this auto-chained createSequence -> renderFinalVideo.
+  //   Now we only create the sequence (composition + timeline.json).
+  //   The user can preview/edit in video-preview.tsx, then tap "Render" to trigger renderFinalVideo.
   useEffect(() => {
     if (!project || !projectId) {
       return;
     }
 
     // Check if all required media assets are ready
+    // Music is optional — generation may fail, but we can still render without it
     const hasAllMediaAssets = !!(
       project.audioUrl && 
-      project.musicUrl
+      project.videoUrls && project.videoUrls.length > 0
     );
 
     console.log('[loader] Asset check:', {
@@ -75,51 +78,67 @@ export default function LoaderScreen() {
       status: project.status,
       hasRenderedVideoUrl: !!project.renderedVideoUrl,
       hasRenderProgress: !!project.renderProgress,
+      hasTimelineJson: !!project.timelineJson,
+      hasSandboxId: !!project.sandboxId,
       renderTriggered: renderTriggeredRef.current,
+      renderStep: renderStepRef.current,
     });
 
-    // Only trigger render when status is completed AND all media assets exist
+    // Only trigger when status is completed AND all media assets exist AND not already rendered
+    // AND sequence hasn't been created yet (no sandboxId and no timelineJson)
+    const sequenceAlreadyCreated = !!project.sandboxId || !!project.timelineJson;
     if (
       project.status === "completed" && 
       hasAllMediaAssets &&
       !project.renderedVideoUrl && 
-      !project.renderProgress && 
+      !sequenceAlreadyCreated &&
       !renderTriggeredRef.current
     ) {
-      console.log('[loader] ✅ All media assets ready! Triggering render...');
-      console.log('[loader]   - audioUrl:', project.audioUrl ? "✓" : "✗");
-      console.log('[loader]   - musicUrl:', project.musicUrl ? "✓" : "✗");
-      console.log('[loader]   - videoUrls:', project.videoUrls?.length || 0, "videos");
+      console.log('[loader] ✅ All media assets ready! Triggering sequence creation...');
       
       renderTriggeredRef.current = true;
+      renderStepRef.current = 'sequence';
       
-      renderVideo({ projectId })
+      // Step 1: Create sequence (sandbox + upload + Claude editing + timeline.json)
+      createSequence({ projectId })
         .then((result) => {
           if (!result?.success) {
-            console.log('[loader] Render not started:', result?.message || 'Unknown reason');
-            // Don't show error - this is likely due to duplicate render prevention
-            // The render is either already in progress or already completed
+            console.log('[loader] Sequence not started:', result?.error || 'Unknown reason');
+            renderTriggeredRef.current = false;
+            renderStepRef.current = null;
+            return;
           }
+          console.log('[loader] ✅ Sequence created! Ready for preview/edit/render.');
+          renderStepRef.current = null;
+          // NOTE: Do NOT auto-trigger renderFinalVideo here.
+          // The user will be navigated to video-preview where they can preview, edit, and tap Render.
         })
         .catch((error) => {
-          console.error('[loader] render error:', error);
-          Alert.alert('Error', `Render failed: ${error}`);
-          renderTriggeredRef.current = false; // Reset on error so user can retry
+          console.error('[loader] Sequence error:', error);
+          Alert.alert('Error', `Sequence creation failed: ${error}`);
+          renderTriggeredRef.current = false;
+          renderStepRef.current = null;
         });
     } else if (project.status === "completed" && !hasAllMediaAssets && !renderTriggeredRef.current) {
       console.log('[loader] ⏳ Waiting for all media assets...');
-      console.log('[loader]   - audioUrl:', project.audioUrl ? "✓" : "✗");
-      console.log('[loader]   - musicUrl:', project.musicUrl ? "✓" : "✗");
-      console.log('[loader]   - videoUrls:', project.videoUrls?.length || 0, "videos");
     }
-  }, [project, projectId, renderVideo]);
+  }, [project, projectId, createSequence]);
 
-  // Check if video is ready or if render failed
+  // Navigate to video-preview when sequence is created (but not yet rendered)
+  // or to result when video is fully rendered
   useEffect(() => {
     if (project?.renderedVideoUrl) {
-      console.log('[loader] Video ready, navigating to result');
+      console.log('[loader] Video fully rendered, navigating to result');
       router.replace({
         pathname: '/result',
+        params: { projectId: projectId.toString() },
+      });
+    } else if (project?.timelineJson && project?.sandboxId) {
+      // Sequence created (timeline.json + sandbox ready), but not rendered yet
+      // → go to video-preview where user can preview/edit/render
+      console.log('[loader] Sequence ready, navigating to video-preview');
+      router.replace({
+        pathname: '/video-preview',
         params: { projectId: projectId.toString() },
       });
     } else if (project?.status === 'failed') {
@@ -147,7 +166,7 @@ export default function LoaderScreen() {
         { cancelable: false }
       );
     }
-  }, [project?.renderedVideoUrl, project?.status, project?.error, projectId, router]);
+  }, [project?.renderedVideoUrl, project?.timelineJson, project?.sandboxId, project?.status, project?.error, projectId, router]);
 
   // Single smooth rotation animation - simplified for better performance
   useEffect(() => {
@@ -209,11 +228,12 @@ export default function LoaderScreen() {
           <Text style={styles.timerText}>{formatTime(elapsedSeconds)}</Text>
         </View>
 
-        {(project?.generationProgress || project?.renderProgress) && (
-          <Text style={styles.progressText}>
-            {project.renderProgress || project.generationProgress}
-          </Text>
-        )}
+      {project?.renderProgress && (
+        <Text style={styles.progressText}>
+          {project.renderProgress.step}
+          {project.renderProgress.details ? `: ${project.renderProgress.details}` : ''}
+        </Text>
+      )}
         
         {project?.renderStep && (
           <Text style={styles.progressText}>

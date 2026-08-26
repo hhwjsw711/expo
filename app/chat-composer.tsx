@@ -28,7 +28,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMutation, useAction, useQuery, useConvex } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import * as Clipboard from 'expo-clipboard';
-import { Audio } from 'expo-av';
+import {
+  createAudioPlayer,
+  setAudioModeAsync,
+  type AudioPlayer,
+} from 'expo-audio';
 import Colors from '@/constants/colors';
 import { useApp } from '@/contexts/AppContext';
 import {
@@ -526,7 +530,7 @@ export default function ChatComposerScreen() {
   // Voice preview state
   const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
   const [generatingVoiceMessageId, setGeneratingVoiceMessageId] = useState<string | null>(null);
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const soundRef = useRef<AudioPlayer | null>(null);
   const audioCache = useRef<Map<string, string>>(new Map()); // messageId -> audioUrl
   
   // Project settings state
@@ -1145,6 +1149,7 @@ export default function ChatComposerScreen() {
             r2Url: r2Result.r2Url,
             r2Key: r2Result.r2Key,
             contentType,
+            storageId: r2Result.storageId,
           }),
           3,
           2000
@@ -1655,8 +1660,8 @@ export default function ChatComposerScreen() {
     // If already playing this message, stop it
     if (playingMessageId === messageId) {
       if (soundRef.current) {
-        await soundRef.current.stopAsync();
-        await soundRef.current.unloadAsync();
+        soundRef.current.pause();
+        soundRef.current.remove();
         soundRef.current = null;
       }
       setPlayingMessageId(null);
@@ -1665,18 +1670,18 @@ export default function ChatComposerScreen() {
     
     // Stop any currently playing audio
     if (soundRef.current) {
-      await soundRef.current.stopAsync();
-      await soundRef.current.unloadAsync();
+      soundRef.current.pause();
+      soundRef.current.remove();
       soundRef.current = null;
     }
     setPlayingMessageId(null);
     
     // Set audio mode to play through speaker (important for iOS silent mode)
     try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: false,
+      await setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+        shouldPlayInBackground: false,
       });
     } catch (error) {
       console.log('Failed to set audio mode:', error);
@@ -1688,22 +1693,18 @@ export default function ChatComposerScreen() {
     if (cachedUrl) {
       // Use cached audio - instant playback!
       try {
-        const { sound } = await Audio.Sound.createAsync(
-          { uri: cachedUrl },
-          { shouldPlay: true }
-          // Speed is NOT applied here - preview plays at natural speed
-          // Speed setting is for final video only (FFmpeg handles it better)
-        );
-        soundRef.current = sound;
+        const player = createAudioPlayer({ uri: cachedUrl });
+        soundRef.current = player;
         setPlayingMessageId(messageId);
         
-        sound.setOnPlaybackStatusUpdate((status) => {
+        player.addListener('playbackStatusUpdate', (status) => {
           if (status.isLoaded && status.didJustFinish) {
             setPlayingMessageId(null);
-            sound.unloadAsync();
+            player.remove();
             soundRef.current = null;
           }
         });
+        player.play();
         return;
       } catch (error) {
         console.log('Cached audio failed, regenerating:', error);
@@ -1727,21 +1728,19 @@ export default function ChatComposerScreen() {
         
         // Play the audio at natural speed
         // Speed setting is for final video only (FFmpeg handles it better)
-        const { sound } = await Audio.Sound.createAsync(
-          { uri: result.audioUrl },
-          { shouldPlay: true }
-        );
-        soundRef.current = sound;
+        const player = createAudioPlayer({ uri: result.audioUrl });
+        soundRef.current = player;
         setPlayingMessageId(messageId);
         
         // Handle playback finished
-        sound.setOnPlaybackStatusUpdate((status) => {
+        player.addListener('playbackStatusUpdate', (status) => {
           if (status.isLoaded && status.didJustFinish) {
             setPlayingMessageId(null);
-            sound.unloadAsync();
+            player.remove();
             soundRef.current = null;
           }
         });
+        player.play();
       } else {
         Alert.alert('Error', result.error || 'Failed to generate voice preview');
       }
@@ -1821,7 +1820,8 @@ export default function ChatComposerScreen() {
   useEffect(() => {
     return () => {
       if (soundRef.current) {
-        soundRef.current.unloadAsync();
+        soundRef.current.pause();
+        soundRef.current.remove();
       }
     };
   }, []);

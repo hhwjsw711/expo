@@ -10,6 +10,22 @@ import * as MediaLibrary from 'expo-media-library';
 import { Platform } from 'react-native';
 
 /**
+ * Read a local file as base64 and convert to Uint8Array for binary upload.
+ * RN's fetch + Blob/arrayBuffer doesn't work reliably with Convex upload URLs.
+ */
+async function readFileAsUint8Array(uri: string): Promise<Uint8Array> {
+  const base64 = await FileSystem.readAsStringAsync(uri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+/**
  * Run async tasks with a concurrency limit.
  * Preserves result order matching the input array.
  */
@@ -190,17 +206,16 @@ export async function uploadFileToConvex(
   // 1. Generate upload URL
   const uploadUrl = await generateUploadUrl();
 
-  // 2. Fetch file and convert to blob
-  const response = await fetch(fileUri);
-  const blob = await response.blob();
+  // 2. Read file as Uint8Array (RN Blob doesn't work with Convex upload URLs)
+  const bytes = await readFileAsUint8Array(fileUri);
 
   // 3. Upload to Convex
   const uploadResponse = await fetch(uploadUrl, {
     method: "POST",
     headers: {
-      "Content-Type": contentType || blob.type,
+      "Content-Type": contentType || "application/octet-stream",
     },
-    body: blob,
+    body: bytes,
   });
 
   if (!uploadResponse.ok) {
@@ -248,17 +263,13 @@ export async function uploadMediaFiles(
           localFilesToCleanup.push(localUri);
         }
 
-        // 3. Fetch file from local URI
-        let blob: Blob;
+        // 3. Read file as Uint8Array (RN Blob doesn't work with Convex upload URLs)
+        let bytes: Uint8Array;
         try {
-          const response = await fetch(localUri);
-          if (!response.ok) {
-            throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
-          }
-          blob = await response.blob();
+          bytes = await readFileAsUint8Array(localUri);
         } catch (fetchError) {
           const errorMessage = fetchError instanceof Error ? fetchError.message : String(fetchError);
-          console.error('[uploadMediaFiles] Fetch error:', errorMessage);
+          console.error('[uploadMediaFiles] Read error:', errorMessage);
           
           // Check for iCloud-related errors
           if (errorMessage.includes('3164') || errorMessage.includes('PHPhotos') || errorMessage.includes('operation couldn\'t be completed')) {
@@ -267,12 +278,12 @@ export async function uploadMediaFiles(
           throw fetchError;
         }
 
-        // 4. Validate blob has content
-        if (blob.size === 0) {
+        // 4. Validate file has content
+        if (bytes.length === 0) {
           throw new Error('This video appears to still be downloading from iCloud. Please wait for the download to complete in the Photos app, then try again.');
         }
 
-        console.log(`[uploadMediaFiles] Fetched ${media.type}, size: ${formatFileSize(blob.size)}`);
+        console.log(`[uploadMediaFiles] Read ${media.type}, size: ${formatFileSize(bytes.length)}`);
 
         // 5. Determine content type
         const contentType = media.type === "video" ? "video/mp4" : "image/jpeg";
@@ -281,7 +292,7 @@ export async function uploadMediaFiles(
         const uploadResponse = await fetch(uploadUrl, {
           method: "POST",
           headers: { "Content-Type": contentType },
-          body: blob,
+          body: bytes,
         });
 
         if (!uploadResponse.ok) {
@@ -295,7 +306,7 @@ export async function uploadMediaFiles(
           storageId: storageId as Id<"_storage">,
           filename: `${media.type}_${Date.now().toString().slice(0, 13)}.${media.type === "video" ? "mp4" : "jpg"}`,
           contentType,
-          size: blob.size,
+          size: bytes.length,
         });
 
         console.log(`[uploadMediaFiles] ✓ Uploaded ${media.type}: ${storageId}`);
@@ -371,17 +382,13 @@ export async function uploadMediaFilesToR2(
           localFilesToCleanup.push(localUri);
         }
 
-        // Fetch file from local URI
-        let blob: Blob;
+        // Read file as Uint8Array (RN Blob doesn't work reliably with upload URLs)
+        let bytes: Uint8Array;
         try {
-          const response = await fetch(localUri);
-          if (!response.ok) {
-            throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
-          }
-          blob = await response.blob();
+          bytes = await readFileAsUint8Array(localUri);
         } catch (fetchError) {
           const errorMessage = fetchError instanceof Error ? fetchError.message : String(fetchError);
-          console.error('[R2] Fetch error:', errorMessage);
+          console.error('[R2] Read error:', errorMessage);
           
           // Check for iCloud-related errors
           if (errorMessage.includes('3164') || errorMessage.includes('PHPhotos') || errorMessage.includes('operation couldn\'t be completed')) {
@@ -390,12 +397,12 @@ export async function uploadMediaFilesToR2(
           throw fetchError;
         }
 
-        // Validate blob has content
-        if (blob.size === 0) {
+        // Validate file has content
+        if (bytes.length === 0) {
           throw new Error('This video appears to still be downloading from iCloud. Please wait for the download to complete in the Photos app, then try again.');
         }
 
-        console.log(`[R2] Uploading ${uploadInfo.filename} (${formatFileSize(blob.size)})...`);
+        console.log(`[R2] Uploading ${uploadInfo.filename} (${formatFileSize(bytes.length)})...`);
 
         // Upload directly to R2
         const uploadResponse = await fetch(uploadInfo.uploadUrl, {
@@ -403,7 +410,7 @@ export async function uploadMediaFilesToR2(
           headers: {
             "Content-Type": fileMetadata[i].contentType,
           },
-          body: blob,
+          body: bytes,
         });
 
         if (!uploadResponse.ok) {
@@ -413,7 +420,7 @@ export async function uploadMediaFilesToR2(
         uploads.push({
           filename: uploadInfo.filename,
           contentType: fileMetadata[i].contentType,
-          size: blob.size,
+          size: bytes.length,
           r2Key: uploadInfo.key,
           r2Url: uploadInfo.r2Url,
         });
@@ -447,19 +454,16 @@ export async function uploadSingleMediaFileToR2(
   size: number;
   r2Key: string;
   r2Url?: string;
+  storageId?: string;
 }> {
   const localUri = await ensureLocalFile(media.uri, media.type, media.assetId);
   const localFilesToCleanup: string[] = [];
   if (localUri !== media.uri) localFilesToCleanup.push(localUri);
 
   try {
-    let blob: Blob;
+    let bytes: Uint8Array;
     try {
-      const response = await fetch(localUri);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch file: ${response.status} ${response.statusText}`);
-      }
-      blob = await response.blob();
+      bytes = await readFileAsUint8Array(localUri);
     } catch (fetchError) {
       const errorMessage = fetchError instanceof Error ? fetchError.message : String(fetchError);
       if (
@@ -475,32 +479,58 @@ export async function uploadSingleMediaFileToR2(
       throw fetchError;
     }
 
-    if (blob.size === 0) {
+    if (bytes.length === 0) {
       throw new Error(
         'This video appears to still be downloading from iCloud. ' +
         'Please wait for the download to complete in the Photos app, then try again.'
       );
     }
 
-    console.log(`[R2-single] Uploading ${uploadInfo.filename} (${formatFileSize(blob.size)})...`);
+    console.log(`[R2-single] Uploading ${uploadInfo.filename} (${formatFileSize(bytes.length)})...`);
 
-    const uploadResponse = await fetch(uploadInfo.uploadUrl, {
-      method: "PUT",
-      headers: { "Content-Type": contentType },
-      body: blob,
-    });
-
-    if (!uploadResponse.ok) {
-      throw new Error(`R2 upload failed: ${uploadResponse.statusText}`);
+    let uploadResponse: Response;
+    try {
+      uploadResponse = await fetch(uploadInfo.uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": contentType },
+        body: bytes,
+      });
+    } catch (postError) {
+      console.log(`[R2-single] POST failed, retrying...`);
+      uploadResponse = await fetch(uploadInfo.uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": contentType },
+        body: bytes,
+      });
     }
 
-    console.log(`[R2-single] ✓ Uploaded ${uploadInfo.filename}`);
+    if (!uploadResponse.ok) {
+      throw new Error(`Upload failed (POST ${uploadResponse.status}): ${uploadResponse.statusText}`);
+    }
+
+    // Try to extract storageId from response (Convex upload URLs return { storageId } in body).
+    // R2 presigned URLs return empty body, so storageId will be undefined.
+    let storageId: string | undefined;
+    try {
+      const text = await uploadResponse.text();
+      if (text) {
+        const json = JSON.parse(text);
+        if (json.storageId) {
+          storageId = json.storageId;
+        }
+      }
+    } catch {
+      // Response body is not JSON (R2 returns empty body), that's fine
+    }
+
+    console.log(`[R2-single] ✓ Uploaded ${uploadInfo.filename}${storageId ? ` (storageId: ${storageId})` : ''}`);
     return {
       filename: uploadInfo.filename,
       contentType,
-      size: blob.size,
+      size: bytes.length,
       r2Key: uploadInfo.key,
       r2Url: uploadInfo.r2Url,
+      storageId,
     };
   } finally {
     await cleanupLocalFiles(localFilesToCleanup);

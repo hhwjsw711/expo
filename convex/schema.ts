@@ -1,0 +1,140 @@
+import { defineSchema, defineTable } from "convex/server";
+import { v } from "convex/values";
+
+export default defineSchema({
+  otpCodes: defineTable({
+    phone: v.string(),
+    code: v.string(),
+    expiresAt: v.number(),
+    createdAt: v.number(),
+  }).index("by_phone", ["phone"]),
+
+  users: defineTable({
+    name: v.optional(v.string()),
+    phone: v.optional(v.string()),
+    preferredStyle: v.optional(v.union(
+      v.literal("playful"),
+      v.literal("professional"),
+      v.literal("travel")
+    )),
+    voiceRecordingUrl: v.optional(v.string()),
+    voiceRecordingStorageId: v.optional(v.id("_storage")),
+    elevenlabsVoiceId: v.optional(v.string()),
+    voicePreviewStorageId: v.optional(v.id("_storage")),
+    selectedVoiceId: v.optional(v.string()),
+    onboardingCompleted: v.boolean(),
+    chatTipsCompleted: v.optional(v.boolean()),
+    videoPreviewTipsCompleted: v.optional(v.boolean()),
+    pushToken: v.optional(v.string()),
+    // Subscription / credits
+    isPremium: v.optional(v.boolean()),
+    subscriptionCreditsRemaining: v.optional(v.number()),
+    purchasedCredits: v.optional(v.number()),
+    subscriptionExpiresAt: v.optional(v.string()),
+    subscriptionType: v.optional(v.string()),
+    // Backdoor password (for dev login)
+    backdoorPassword: v.optional(v.string()),
+    createdAt: v.number(),
+  }).index("by_phone", ["phone"]),
+
+  defaultVoices: defineTable({
+    voiceId: v.string(),
+    name: v.string(),
+    description: v.optional(v.string()),
+    previewStorageId: v.optional(v.id("_storage")),
+    createdAt: v.number(),
+  }).index("by_voiceId", ["voiceId"]),
+
+  projects: defineTable({
+    userId: v.optional(v.id("users")),
+    name: v.optional(v.string()),
+    prompt: v.string(),
+    files: v.array(v.id("_storage")),
+    fileMetadata: v.optional(v.array(v.object({
+      storageId: v.id("_storage"),
+      filename: v.string(),
+      contentType: v.string(),
+      size: v.number(),
+    }))),
+    thumbnail: v.optional(v.id("_storage")),
+    thumbnailUrl: v.optional(v.string()),
+    createdAt: v.number(),
+    status: v.optional(
+      v.union(
+        v.literal("processing"),
+        v.literal("completed"),
+        v.literal("failed"),
+        v.literal("rendering"),
+        v.literal("draft"),
+        v.literal("script_generating"),
+      )
+    ),
+    completedAt: v.optional(v.number()),
+    submittedAt: v.optional(v.number()),
+    script: v.optional(v.string()),
+    audioUrl: v.optional(v.string()),
+    srtContent: v.optional(v.string()),
+    musicUrl: v.optional(v.string()),
+    videoUrls: v.optional(v.array(v.string())),
+    error: v.optional(v.string()),
+    renderError: v.optional(v.string()),
+    renderedVideoUrl: v.optional(v.string()),
+    duration: v.optional(v.number()),
+    renderProgress: v.optional(v.object({
+      step: v.string(),
+      details: v.optional(v.string()),
+      timestamp: v.number(),
+    })),
+    sandboxId: v.optional(v.string()),
+    sandboxStatus: v.optional(v.union(
+      v.literal("alive"),
+      v.literal("dead")
+    )),
+    renderStep: v.optional(v.union(
+      v.literal("not_started"),
+      v.literal("creating_sandbox"),
+      v.literal("uploading_media"),
+      v.literal("editing_sequence"),
+      v.literal("rendering_video"),
+      v.literal("completed"),
+      v.literal("failed")
+    )),
+    // Chat composer fields
+    chatEnabled: v.optional(v.boolean()),
+    userMessageCount: v.optional(v.number()),
+    scriptGeneratedAt: v.optional(v.number()),
+    voiceSpeed: v.optional(v.number()),
+    renderMode: v.optional(v.string()),
+    keepOrder: v.optional(v.boolean()),
+    animationStatus: v.optional(v.string()),
+    timelineJson: v.optional(v.string()),
+    assContent: v.optional(v.string()),
+    mediaDescriptions: v.optional(v.array(v.object({
+      storageId: v.id("_storage"),
+      description: v.string(),
+    }))),
+    generationProgress: v.optional(v.object({
+      step: v.string(),
+      details: v.optional(v.string()),
+      timestamp: v.number(),
+    })),
+    // Audio settings
+    voiceVolume: v.optional(v.number()),
+    musicVolume: v.optional(v.number()),
+    originalSoundVolume: v.optional(v.number()),
+    includeVoice: v.optional(v.boolean()),
+    includeMusic: v.optional(v.boolean()),
+    includeCaptions: v.optional(v.boolean()),
+    includeOriginalSound: v.optional(v.boolean()),
+  }).index("by_user", ["userId"]),
+
+  chatMessages: defineTable({
+    projectId: v.id("projects"),
+    role: v.string(),
+    content: v.string(),
+    messageIndex: v.optional(v.number()),
+    mediaIds: v.optional(v.array(v.id("_storage"))),
+    isEdited: v.optional(v.boolean()),
+    createdAt: v.number(),
+  }).index("by_project", ["projectId"]),
+});

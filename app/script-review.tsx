@@ -317,9 +317,9 @@ export default function ScriptReviewScreen() {
         });
       }
 
-      // For normal mode, mark as submitted and schedule generation server-side
+      // For normal mode, mark as submitted — server schedules generateMediaAssets automatically
       if (!isTestRun) {
-        console.log('[script-review] Marking project as submitted (schedules generation server-side)...');
+        console.log('[script-review] Marking project as submitted (server schedules media generation)...');
         try {
           await markProjectSubmitted({ id: projectId });
           console.log('[script-review] Media generation scheduled server-side');

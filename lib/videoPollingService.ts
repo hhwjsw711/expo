@@ -23,7 +23,7 @@ export function useVideoPolling() {
   const checkedVideos = useRef(new Set<string>());
   const renderTriggered = useRef(new Set<string>());
   const convex = useConvex();
-  const renderVideo = useAction(api.render.renderVideo);
+  const createSequence = useAction(api.render.createSequence);
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
@@ -50,9 +50,10 @@ export function useVideoPolling() {
           if (!project) continue;
 
           // Check if all media assets are ready but video not rendered yet
+          // Music is optional — generation may fail, but we can still render without it
           const hasAllMediaAssets = !!(
             project.audioUrl && 
-            project.musicUrl
+            project.videoUrls && project.videoUrls.length > 0
           );
           
           // ONLY mark as failed if backend explicitly sets status to 'failed'
@@ -102,19 +103,20 @@ export function useVideoPolling() {
               }
             }
           }
-          // Priority 3: Trigger rendering if media assets are ready but rendering not started
+          // Priority 3: Trigger sequence creation if media assets are ready but sequence not started
+          // NOTE: Previously auto-chained createSequence -> renderFinalVideo.
+          //   Now only create the sequence. User previews/edits in video-preview, then taps Render.
           else if (
             project.status === 'completed' && 
             hasAllMediaAssets &&
             !project.renderedVideoUrl && 
             !project.renderProgress &&
+            !project.sandboxId &&  // Only trigger if no sandbox yet (not mid-pipeline)
+            !project.timelineJson &&  // Sequence not yet created
             !renderTriggered.current.has(video.id)
           ) {
-            // Media assets ready, but rendering not started - trigger it!
-            console.log('[VideoPolling] ✅ All media assets ready! Triggering render for:', video.id);
-            console.log('[VideoPolling]   - audioUrl:', project.audioUrl ? "✓" : "✗");
-            console.log('[VideoPolling]   - musicUrl:', project.musicUrl ? "✓" : "✗");
-            console.log('[VideoPolling]   - videoUrls:', project.videoUrls?.length || 0, "videos");
+            // Media assets ready, but sequence not created - trigger it!
+            console.log('[VideoPolling] ✅ All media assets ready! Triggering sequence for:', video.id);
             
             renderTriggered.current.add(video.id);
             
@@ -123,13 +125,41 @@ export function useVideoPolling() {
               updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl);
             }
             
-            // Trigger render - backend guard prevents duplicate renders
-            // Any errors are non-critical since rendering continues via scheduled steps
-            renderVideo({ projectId: video.projectId as any }).catch((error) => {
-              console.warn('[VideoPolling] Render trigger returned error (non-critical, backend guards against duplicates):', error);
-              // Don't mark as failed - rendering continues in background via scheduled steps
-              // Backend guard prevents duplicate renders if multiple triggers happen simultaneously
-            });
+            // Step 1: Create sequence only (sandbox + upload + Claude + timeline.json)
+            createSequence({ projectId: video.projectId as any })
+              .then((result) => {
+                if (!result?.success) {
+                  console.warn('[VideoPolling] Sequence not started:', result?.error);
+                  return;
+                }
+                console.log('[VideoPolling] ✅ Sequence created for:', video.id, '— user can preview/edit/render');
+                // NOTE: Do NOT auto-trigger renderFinalVideo.
+                // User will see the video in "processing" state until they open it and tap Render.
+              })
+              .catch((error) => {
+                console.warn('[VideoPolling] Sequence error:', error);
+              });
+          }
+          // Priority 3b: Sandbox exists but video not rendered — keep as processing
+          // (previously auto-resumed renderFinalVideo; now user must tap Render in video-preview)
+          else if (
+            project.status === 'rendering' &&
+            project.sandboxId &&
+            !project.renderedVideoUrl
+          ) {
+            // If timelineJson exists, sequence is ready for preview/render — show as ready
+            if (project.timelineJson) {
+              if (video.status !== 'ready') {
+                console.log('[VideoPolling] ✅ Sequence ready for preview:', video.id);
+                updateVideoStatus(video.id, 'ready', undefined, undefined, project.thumbnailUrl);
+              }
+            } else {
+              // Sequence still being created (Claude editing etc.)
+              if (video.status === 'pending' || video.status === 'failed') {
+                console.log('[VideoPolling] ⏳ Sequence ready, waiting for user to render:', video.id);
+                updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl);
+              }
+            }
           }
           // Priority 4: Show processing for any intermediate states OR if completed but still rendering
           else if (
@@ -165,7 +195,7 @@ export function useVideoPolling() {
         pollingInterval.current = null;
       }
     };
-  }, [videos, updateVideoStatus, convex, renderVideo]);
+  }, [videos, updateVideoStatus, convex, createSequence]);
 }
 
 /**
