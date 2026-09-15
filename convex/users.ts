@@ -475,49 +475,11 @@ export const internalDeleteAccount = internalMutation({
   },
 });
 
-// ─── Update Subscription Status ─────────────────────────────────────────────
-export const updateSubscriptionStatus = mutation({
-  args: {
-    userId: v.id("users"),
-    isPremium: v.optional(v.boolean()),
-    subscriptionCreditsRemaining: v.optional(v.number()),
-    subscriptionExpiresAt: v.optional(v.string()),
-    subscriptionType: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const updates: any = {};
-    if (args.isPremium !== undefined) updates.isPremium = args.isPremium;
-    if (args.subscriptionCreditsRemaining !== undefined) {
-      updates.subscriptionCreditsRemaining = args.subscriptionCreditsRemaining;
-    }
-    if (args.subscriptionExpiresAt !== undefined) {
-      updates.subscriptionExpiresAt = args.subscriptionExpiresAt;
-    }
-    if (args.subscriptionType !== undefined) {
-      updates.subscriptionType = args.subscriptionType;
-    }
-    await ctx.db.patch(args.userId, updates);
-    return { success: true };
-  },
-});
-
-// ─── Purchase Credits ───────────────────────────────────────────────────────
-export const purchaseCredits = mutation({
-  args: {
-    userId: v.id("users"),
-    credits: v.number(),
-    priceInCents: v.optional(v.number()),
-    productId: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
-    const current = user?.purchasedCredits || 0;
-    await ctx.db.patch(args.userId, {
-      purchasedCredits: current + args.credits,
-    });
-    return { success: true };
-  },
-});
+// ─── Subscription / credits state changes ─────────────────────────────────────
+// The public mutations `updateSubscriptionStatus` and `purchaseCredits` were
+// REMOVED: anyone could patch any user's subscription or add arbitrary credits.
+// All grants now flow exclusively through the verified RevenueCat webhook:
+//   http.ts (verify signature) -> revenuecat.ts internal mutations.
 
 // ─── Redeem Promo Code ──────────────────────────────────────────────────────
 // Codes are configured via PROMO_CODES env var (JSON: {"CODE": credits}).

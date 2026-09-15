@@ -14,6 +14,7 @@ import type * as phoneAuth from "../phoneAuth.js";
 import type * as prompts from "../prompts.js";
 import type * as r2Storage from "../r2Storage.js";
 import type * as render from "../render.js";
+import type * as revenuecat from "../revenuecat.js";
 import type * as tasks from "../tasks.js";
 import type * as twilioVerify from "../twilioVerify.js";
 import type * as users from "../users.js";
@@ -31,6 +32,7 @@ declare const fullApi: ApiFromModules<{
   prompts: typeof prompts;
   r2Storage: typeof r2Storage;
   render: typeof render;
+  revenuecat: typeof revenuecat;
   tasks: typeof tasks;
   twilioVerify: typeof twilioVerify;
   users: typeof users;

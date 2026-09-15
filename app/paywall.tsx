@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQuery, useMutation } from 'convex/react';
+// note: useMutation still needed for redeemPromoCode (env-driven, safe)
 import { api } from '@/convex/_generated/api';
 import Colors from '@/constants/colors';
 import { Fonts } from '@/constants/typography';
@@ -136,8 +137,6 @@ export default function PaywallScreen() {
     purchaseCredits,
     getCreditPackPrice,
   } = usePaywall();
-  
-  const updateSubscriptionStatus = useMutation(api.users.updateSubscriptionStatus);
   
   const videoGenerationStatus = useQuery(
     api.users.getVideoGenerationStatus,
@@ -305,19 +304,9 @@ export default function PaywallScreen() {
       if (success) {
         markPaywallCompleted();
         
-        if (userId) {
-          try {
-            await updateSubscriptionStatus({
-              userId,
-              isPremium: true,
-              subscriptionExpiresAt: subscriptionState.expirationDate || undefined,
-              subscriptionType: selectedPlan === 'monthly' ? 'monthly' : 'annual',
-            });
-            console.log('[Paywall] Subscription status synced to backend');
-          } catch (syncError) {
-            console.error('[Paywall] Failed to sync subscription status:', syncError);
-          }
-        }
+        // NOTE: subscription state is now granted exclusively by the
+        // RevenueCat webhook - the client no longer writes subscription
+        // status to the backend.
         
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setShowConfetti(true);
@@ -326,7 +315,7 @@ export default function PaywallScreen() {
     } finally {
       setIsPurchasing(false);
     }
-  }, [selectedPlan, monthlyPackage, annualPackage, purchasePackage, navigateAfterSuccess, userId, updateSubscriptionStatus, subscriptionState, markPaywallCompleted]);
+  }, [selectedPlan, monthlyPackage, annualPackage, purchasePackage, navigateAfterSuccess, markPaywallCompleted]);
 
   const handleRestore = useCallback(async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -337,18 +326,8 @@ export default function PaywallScreen() {
       if (success) {
         markPaywallCompleted();
         
-        if (userId) {
-          try {
-            await updateSubscriptionStatus({
-              userId,
-              isPremium: true,
-              subscriptionExpiresAt: subscriptionState.expirationDate || undefined,
-            });
-            console.log('[Paywall] Subscription status synced to backend after restore');
-          } catch (syncError) {
-            console.error('[Paywall] Failed to sync subscription status:', syncError);
-          }
-        }
+        // NOTE: restore only refreshes RevenueCat customerInfo; any state
+        // changes flow through the RevenueCat webhook.
         
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setShowConfetti(true);
@@ -357,7 +336,7 @@ export default function PaywallScreen() {
     } finally {
       setIsRestoring(false);
     }
-  }, [restorePurchases, navigateAfterSuccess, userId, updateSubscriptionStatus, subscriptionState, markPaywallCompleted]);
+  }, [restorePurchases, navigateAfterSuccess, markPaywallCompleted]);
 
   const handleApplyPromoCode = useCallback(async () => {
     if (!promoCode.trim()) {

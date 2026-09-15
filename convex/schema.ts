@@ -32,10 +32,12 @@ export default defineSchema({
     purchasedCredits: v.optional(v.number()),
     subscriptionExpiresAt: v.optional(v.string()),
     subscriptionType: v.optional(v.string()),
+    // RevenueCat app_user_id (bound at login via Purchases.logIn(convexUserId))
+    revenuecatAppUserId: v.optional(v.string()),
     // Backdoor password (for dev login)
     backdoorPassword: v.optional(v.string()),
     createdAt: v.number(),
-  }).index("by_phone", ["phone"]),
+  }).index("by_phone", ["phone"]).index("by_revenuecat_app_user_id", ["revenuecatAppUserId"]),
 
   defaultVoices: defineTable({
     voiceId: v.string(),
@@ -137,4 +139,13 @@ export default defineSchema({
     isEdited: v.optional(v.boolean()),
     createdAt: v.number(),
   }).index("by_project", ["projectId"]),
+
+  // RevenueCat webhook events - idempotency guard.
+  // Each event_id is stored on first receipt; duplicates are dropped.
+  revenuecatEvents: defineTable({
+    eventId: v.string(),
+    eventType: v.string(),
+    appUserId: v.string(),
+    processedAt: v.number(),
+  }).index("by_eventId", ["eventId"]),
 });

@@ -38,21 +38,18 @@ export const [PaywallProvider, usePaywall] = createContextHook(() => {
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const syncedRef = useRef(false);
   const [creditProducts, setCreditProducts] = useState<PurchasesStoreProduct[]>([]);
   
   // Session-level flag for test mode: tracks if user completed paywall this session
   // Resets on app reload, allowing paywall to show again
   const [hasCompletedPaywallThisSession, setHasCompletedPaywallThisSession] = useState(false);
   
-  // Get userId from AppContext for syncing subscription status
+  // Get userId from AppContext for binding the RevenueCat identity
   const { userId } = useApp();
   
-  // Mutation to sync subscription status to backend
-  const updateSubscriptionStatus = useMutation(api.users.updateSubscriptionStatus);
-  
-  // Mutation to purchase credits
-  const purchaseCreditsMutation = useMutation(api.users.purchaseCredits);
+  // Bind this Convex user to the RevenueCat app_user_id so webhook events
+  // can be attributed. Credits/subscriptions are granted ONLY by the webhook.
+  const bindRevenueCatUser = useMutation(api.revenuecat.bindRevenueCatUser);
 
   useEffect(() => {
     initializePurchases();
@@ -220,18 +217,6 @@ export const [PaywallProvider, usePaywall] = createContextHook(() => {
     }
   }, []);
 
-  const identifyUser = useCallback(async (userId: string) => {
-    try {
-      if (isWebPlatform) return;
-      
-      console.log('[Paywall] Identifying user:', userId);
-      await Purchases.logIn(userId);
-      await fetchCustomerInfo();
-    } catch (err) {
-      console.error('[Paywall] Error identifying user:', err);
-    }
-  }, [isWebPlatform]);
-
   // Mark paywall as completed for this session (used in test mode)
   const markPaywallCompleted = useCallback(() => {
     console.log('[Paywall] Marking paywall as completed for this session');
@@ -239,6 +224,9 @@ export const [PaywallProvider, usePaywall] = createContextHook(() => {
   }, []);
 
   // Purchase credit pack
+  // NOTE: credits are granted exclusively by the RevenueCat webhook after a
+  // verified purchase. The app never records credits itself - the previous
+  // "product not found -> record anyway" free-credit fallback was removed.
   const purchaseCredits = useCallback(async (packType: CreditPackType): Promise<boolean> => {
     if (!userId) {
       Alert.alert('Error', 'Please sign in first');
@@ -249,7 +237,6 @@ export const [PaywallProvider, usePaywall] = createContextHook(() => {
     
     try {
       if (isWebPlatform) {
-        // For web, directly record the purchase (would need a web payment solution)
         console.log('[Paywall] Web credit purchase not supported yet');
         Alert.alert('Not Available', 'Credit purchases are not available on web');
         return false;
@@ -258,36 +245,25 @@ export const [PaywallProvider, usePaywall] = createContextHook(() => {
       // Find the product
       const product = creditProducts.find(p => p.identifier === pack.productId);
       
-      if (product) {
-        // Purchase through RevenueCat
-        console.log('[Paywall] Purchasing credit pack via RevenueCat:', pack.productId);
-        const { customerInfo: newCustomerInfo } = await Purchases.purchaseStoreProduct(product);
-        setCustomerInfo(newCustomerInfo);
-        
-        // Record the credit purchase in backend
-        await purchaseCreditsMutation({
-          userId,
-          credits: pack.credits,
-          priceInCents: pack.priceInCents,
-          productId: pack.productId,
-        });
-        
-        console.log('[Paywall] Credit purchase successful:', pack.credits, 'credits');
-        return true;
-      } else {
-        // Product not found in RevenueCat - use direct backend purchase (for testing)
-        console.log('[Paywall] Product not in RevenueCat, recording directly in backend');
-        
-        await purchaseCreditsMutation({
-          userId,
-          credits: pack.credits,
-          priceInCents: pack.priceInCents,
-          productId: pack.productId,
-        });
-        
-        console.log('[Paywall] Credit purchase recorded:', pack.credits, 'credits');
-        return true;
+      if (!product) {
+        // Do NOT record anything - the pack must exist in RevenueCat (App Store
+        // products in production, Test Store products in sandbox) before it can
+        // be purchased. No backend fallback.
+        console.error('[Paywall] Credit product not found in RevenueCat:', pack.productId);
+        Alert.alert(
+          'Purchase Unavailable',
+          'This credit pack is currently unavailable. Please try again later.'
+        );
+        return false;
       }
+
+      // Purchase through RevenueCat - the webhook will grant the credits
+      console.log('[Paywall] Purchasing credit pack via RevenueCat:', pack.productId);
+      const { customerInfo: newCustomerInfo } = await Purchases.purchaseStoreProduct(product);
+      setCustomerInfo(newCustomerInfo);
+      
+      console.log('[Paywall] Credit purchase transaction completed:', pack.credits, 'credits will be granted via webhook');
+      return true;
     } catch (err: any) {
       if (err.userCancelled) {
         console.log('[Paywall] User cancelled credit purchase');
@@ -297,7 +273,7 @@ export const [PaywallProvider, usePaywall] = createContextHook(() => {
       Alert.alert('Purchase Failed', 'Unable to complete purchase. Please try again.');
       return false;
     }
-  }, [userId, creditProducts, purchaseCreditsMutation, isWebPlatform]);
+  }, [userId, creditProducts, isWebPlatform]);
 
   const subscriptionState: SubscriptionState = useMemo(() => {
     // In test mode, always return not premium to test the paywall flow
@@ -352,31 +328,31 @@ export const [PaywallProvider, usePaywall] = createContextHook(() => {
     };
   }, [customerInfo, isWebPlatform]);
 
-  // Sync subscription status to backend on app load when user is subscribed
+  // Bind the RevenueCat identity to this Convex user at login.
+  // Purchases.logIn(convexUserId) aligns RevenueCat's app_user_id with our
+  // userId; bindRevenueCatUser records it in the users table so webhook
+  // events can be attributed to this user. No subscription/credit state is
+  // written by the client anymore - the RevenueCat webhook is the single
+  // source of truth.
+  const boundRef = useRef<string | null>(null);
   useEffect(() => {
-    const syncSubscriptionToBackend = async () => {
-      if (!userId || !isInitialized || syncedRef.current) return;
-      
-      // Only sync if user has an active subscription
-      if (subscriptionState.isSubscribed) {
-        try {
-          console.log('[Paywall] Syncing subscription status to backend on load');
-          await updateSubscriptionStatus({
-            userId,
-            isPremium: true,
-            subscriptionExpiresAt: subscriptionState.expirationDate || undefined,
-            subscriptionType: subscriptionState.subscriptionType || undefined,
-          });
-          syncedRef.current = true;
-          console.log('[Paywall] Subscription status synced to backend');
-        } catch (err) {
-          console.error('[Paywall] Failed to sync subscription status to backend:', err);
-        }
+    const bindIdentity = async () => {
+      if (!userId || !isInitialized || boundRef.current === userId) return;
+
+      try {
+        console.log('[Paywall] Logging in to RevenueCat with userId:', userId);
+        await Purchases.logIn(userId);
+        await bindRevenueCatUser({ userId });
+        boundRef.current = userId;
+        await fetchCustomerInfo();
+        console.log('[Paywall] RevenueCat identity bound to backend user');
+      } catch (err) {
+        console.error('[Paywall] Failed to bind RevenueCat identity:', err);
       }
     };
-    
-    syncSubscriptionToBackend();
-  }, [userId, isInitialized, subscriptionState.isSubscribed, subscriptionState.expirationDate, subscriptionState.subscriptionType, updateSubscriptionStatus]);
+
+    bindIdentity();
+  }, [userId, isInitialized, bindRevenueCatUser, fetchCustomerInfo]);
 
   const monthlyPackage = useMemo(() => {
     return offerings?.availablePackages.find(
@@ -409,7 +385,6 @@ export const [PaywallProvider, usePaywall] = createContextHook(() => {
     annualPackage,
     purchasePackage,
     restorePurchases,
-    identifyUser,
     fetchCustomerInfo,
     // Test mode session tracking
     hasCompletedPaywallThisSession,
@@ -429,7 +404,6 @@ export const [PaywallProvider, usePaywall] = createContextHook(() => {
     annualPackage,
     purchasePackage,
     restorePurchases,
-    identifyUser,
     hasCompletedPaywallThisSession,
     markPaywallCompleted,
     creditProducts,
