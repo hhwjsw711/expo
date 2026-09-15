@@ -17,8 +17,14 @@ import {
   InteractionManager,
   LayoutChangeEvent,
 } from 'react-native';
-import * as FileSystem from 'expo-file-system/legacy';
-import * as MediaLibrary from 'expo-media-library/legacy';
+// Lazy-load native-only modules to prevent web crashes
+let FileSystem: any = null;
+let MediaLibrary: any = null;
+if (Platform.OS !== 'web') {
+  // These imports are native-only and will crash on web
+  FileSystem = require('expo-file-system/legacy');
+  MediaLibrary = require('expo-media-library/legacy');
+}
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { VideoView, useVideoPlayer } from 'expo-video';
 import { useEvent } from 'expo';

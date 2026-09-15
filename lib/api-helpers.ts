@@ -5,15 +5,37 @@
  */
 
 import { Id } from "@/convex/_generated/dataModel";
-import * as FileSystem from 'expo-file-system/legacy';
-import * as MediaLibrary from 'expo-media-library';
 import { Platform } from 'react-native';
+
+// Lazy-load native modules to avoid crashes on web platform
+let FileSystem: any = null;
+let MediaLibrary: any = null;
+
+async function loadNativeModules() {
+  if (Platform.OS === 'web') return;
+  const fs = await import('expo-file-system/legacy');
+  FileSystem = fs;
+  const ml = await import('expo-media-library');
+  MediaLibrary = ml;
+}
+
+// Pre-load on native platforms
+if (Platform.OS !== 'web') {
+  loadNativeModules();
+}
 
 /**
  * Read a local file as base64 and convert to Uint8Array for binary upload.
  * RN's fetch + Blob/arrayBuffer doesn't work reliably with Convex upload URLs.
  */
 async function readFileAsUint8Array(uri: string): Promise<Uint8Array> {
+  if (Platform.OS === 'web') {
+    // Web: use fetch + arrayBuffer
+    const response = await fetch(uri);
+    const arrayBuffer = await response.arrayBuffer();
+    return new Uint8Array(arrayBuffer);
+  }
+  if (!FileSystem) await loadNativeModules();
   const base64 = await FileSystem.readAsStringAsync(uri, {
     encoding: FileSystem.EncodingType.Base64,
   });
@@ -179,6 +201,8 @@ export async function ensureLocalFile(uri: string, type: "image" | "video", prov
  * @param localUris - Array of local file URIs to clean up
  */
 async function cleanupLocalFiles(localUris: string[]): Promise<void> {
+  if (Platform.OS === 'web') return;
+  if (!FileSystem) await loadNativeModules();
   for (const uri of localUris) {
     if (uri.startsWith(FileSystem.cacheDirectory || '')) {
       try {
