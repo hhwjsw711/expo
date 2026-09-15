@@ -111,14 +111,16 @@ export const backdoorLogin = mutation({
     password: v.string(),
   },
   handler: async (ctx, args) => {
-    const BACKDOOR_PASSWORD = process.env.BACKDOOR_PASSWORD || "rYSHRfLTy8D07n";
+    // Dev-only shortcut. Password MUST be set via BACKDOOR_PASSWORD env var;
+    // no hardcoded default. Unset -> login is always rejected.
+    const backdoorPassword = process.env.BACKDOOR_PASSWORD;
 
-    // Reject backdoor login if explicitly disabled in production
+    // Reject backdoor login if explicitly disabled
     if (process.env.DISABLE_BACKDOOR === "true") {
       throw new Error("Backdoor login is disabled");
     }
 
-    if (args.password !== BACKDOOR_PASSWORD) {
+    if (!backdoorPassword || args.password !== backdoorPassword) {
       throw new Error("Invalid password");
     }
 
@@ -151,11 +153,11 @@ export const backdoorLogin = mutation({
 });
 
 // ─── Test Account Login ─────────────────────────────────────────────────────
+// Opt-in via ENABLE_TEST_ACCOUNT env var. Never grants premium/credits.
 export const testAccountLogin = mutation({
   args: { phone: v.string() },
   handler: async (ctx, args) => {
-    // Reject test account login if explicitly disabled in production
-    if (process.env.DISABLE_TEST_ACCOUNT === "true") {
+    if (process.env.ENABLE_TEST_ACCOUNT !== "true") {
       throw new Error("Test account login is disabled");
     }
 
@@ -169,9 +171,6 @@ export const testAccountLogin = mutation({
         phone: args.phone,
         name: "Test User",
         onboardingCompleted: false,
-        isPremium: true,
-        subscriptionCreditsRemaining: 100,
-        purchasedCredits: 100,
         createdAt: Date.now(),
       });
       user = await ctx.db.get(userId);
@@ -521,23 +520,36 @@ export const purchaseCredits = mutation({
 });
 
 // ─── Redeem Promo Code ──────────────────────────────────────────────────────
+// Codes are configured via PROMO_CODES env var (JSON: {"CODE": credits}).
+// Unset -> every code is invalid. No hardcoded codes.
 export const redeemPromoCode = mutation({
   args: {
     userId: v.id("users"),
     code: v.string(),
   },
   handler: async (ctx, args) => {
-    // Promo code: "REELFUL100" gives 100 credits
-    if (args.code === "REELFUL100") {
-      const user = await ctx.db.get(args.userId);
-      const current = user?.purchasedCredits || 0;
-      await ctx.db.patch(args.userId, {
-        purchasedCredits: current + 100,
-        isPremium: true,
-      });
-      return { success: true, durationDays: 30, credits: 100 };
+    let promoCodes: Record<string, number> = {};
+    if (process.env.PROMO_CODES) {
+      try {
+        promoCodes = JSON.parse(process.env.PROMO_CODES);
+      } catch {
+        console.error("[redeemPromoCode] Invalid PROMO_CODES env var JSON");
+        return { success: false, error: "Invalid promo code" };
+      }
     }
-    return { success: false, error: "Invalid promo code" };
+
+    const credits = promoCodes[args.code];
+    if (typeof credits !== "number" || credits <= 0) {
+      return { success: false, error: "Invalid promo code" };
+    }
+
+    const user = await ctx.db.get(args.userId);
+    const current = user?.purchasedCredits || 0;
+    await ctx.db.patch(args.userId, {
+      purchasedCredits: current + credits,
+      isPremium: true,
+    });
+    return { success: true, durationDays: 30, credits };
   },
 });
 

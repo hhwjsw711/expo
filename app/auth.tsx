@@ -62,7 +62,6 @@ export default function AuthScreen() {
   const sendOTP = useAction(api.phoneAuth.sendOTP);
   const verifyOTP = useMutation(api.users.verifyOTP);
   const verifyTwilioOTP = useAction(api.twilioVerify.verifyTwilioOTP);
-  const testAccountLogin = useMutation(api.users.testAccountLogin);
   const backdoorLogin = useMutation(api.users.backdoorLogin);
   
   // Track if we're using Twilio Verify or development mode
@@ -339,44 +338,6 @@ export default function AuthScreen() {
     await handleSendCode();
   };
 
-  const handleTestAccount = async () => {
-    setIsLoading(true);
-    try {
-      const testPhone = '+14244131728';
-      console.log('[Test Account] Accessing test account:', testPhone);
-      
-      // Use the dedicated test account login mutation
-      const result = await testAccountLogin({ phone: testPhone });
-      
-      if (result.success && result.userId) {
-        console.log('[Test Account] Success! User ID:', result.userId);
-        
-        // Save userId to context
-        await saveUserId(result.userId);
-        
-        // Navigate based on onboarding status (or test mode)
-        if (ENABLE_TEST_RUN_MODE) {
-          // Test mode: always go to onboarding for testing
-          router.replace('/onboarding');
-        } else if (result.onboardingCompleted) {
-          router.replace('/(tabs)');
-        } else {
-          router.replace('/onboarding');
-        }
-      } else {
-        Alert.alert('Error', 'Failed to access test account.');
-      }
-    } catch (error) {
-      console.error('[Test Account] Error:', error);
-      Alert.alert(
-        'Error',
-        error instanceof Error ? error.message : 'Failed to access test account. Please try again.'
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const isPhoneValid = () => {
     const digits = phoneNumber.replace(/\D/g, '');
     // Allow backdoor phone number (0000000000)
@@ -523,16 +484,6 @@ export default function AuthScreen() {
                       )}
                     </View>
                   </TouchableOpacity>
-
-                  {/* Test Account Button - Commented out for production */}
-                  {/* <TouchableOpacity
-                    style={styles.testAccountButton}
-                    onPress={handleTestAccount}
-                    disabled={isLoading}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.testAccountText}>Use Test Account</Text>
-                  </TouchableOpacity> */}
                 </>
               ) : step === 'password' ? (
                 <>
@@ -831,20 +782,6 @@ const styles = StyleSheet.create({
     color: Colors.ember,
   },
   // resendButton and resendText removed - replaced by resendSection
-  testAccountButton: {
-    marginTop: 24,
-    padding: 16,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: Colors.creamDarker,
-    borderRadius: 12,
-    backgroundColor: Colors.creamMedium,
-  },
-  testAccountText: {
-    fontSize: 14,
-    fontFamily: Fonts.regular,
-    color: Colors.textSecondary,
-  },
   termsText: {
     fontSize: 13,
     fontFamily: Fonts.regular,
