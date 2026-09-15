@@ -56,7 +56,7 @@ async function retryWithBackoff<T>(
 export default function AuthScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { saveUserId } = useApp();
+  const { saveUserId, saveJwt } = useApp();
   
   // Convex hooks - connected to real backend
   const sendOTP = useAction(api.phoneAuth.sendOTP);
@@ -224,9 +224,13 @@ export default function AuthScreen() {
       
       console.log('[Auth] Verification result:', result);
       
-      if (result.success) {
-        // Save userId to context
+      if (result.success && result.userId) {
+        // Save userId + JWT to context (JWT is set on the Convex client)
         await saveUserId(result.userId);
+        const token = (result as any).token;
+        if (token) {
+          await saveJwt(token);
+        }
         
         // Navigate based on onboarding status (or test mode)
         if (ENABLE_TEST_RUN_MODE) {
@@ -286,8 +290,11 @@ export default function AuthScreen() {
       console.log('[Auth] Backdoor login result:', result);
       
       if (result.success && result.userId) {
-        // Save userId to context
+        // Save userId + JWT to context
         await saveUserId(result.userId);
+        if (result.token) {
+          await saveJwt(result.token);
+        }
         
         // Navigate based on onboarding status (or test mode)
         if (ENABLE_TEST_RUN_MODE) {

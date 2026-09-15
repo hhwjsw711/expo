@@ -4,6 +4,7 @@ import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { signUserJWT } from "./auth";
 
 // Verify OTP using Twilio Verify (production)
 export const verifyTwilioOTP = action({
@@ -11,7 +12,7 @@ export const verifyTwilioOTP = action({
     phone: v.string(),
     code: v.string(),
   },
-  handler: async (ctx, args): Promise<{ success: boolean; userId?: Id<"users">; onboardingCompleted?: boolean }> => {
+  handler: async (ctx, args): Promise<{ success: boolean; userId?: Id<"users">; onboardingCompleted?: boolean; token?: string }> => {
     const accountSid = process.env.TWILIO_ACCOUNT_SID;
     const authToken = process.env.TWILIO_AUTH_TOKEN;
     const verifyServiceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
@@ -45,6 +46,7 @@ export const verifyTwilioOTP = action({
           success: true,
           userId: result.userId,
           onboardingCompleted: result.onboardingCompleted,
+          token: await signUserJWT(result.userId as string),
         };
       } else {
         throw new Error("Invalid verification code");

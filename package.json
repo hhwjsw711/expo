@@ -45,6 +45,7 @@
     "expo-video": "~57.0.2",
     "expo-video-thumbnails": "~57.0.1",
     "expo-web-browser": "~57.0.2",
+    "jose": "^6.2.12",
     "lucide-react-native": "^0.475.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",

@@ -41,5 +41,8 @@ core
 .claude/
 .cursor/
 
+# === Temp / intermediate files ===
+.temp/
+
 node_modules
 .expo

@@ -2,10 +2,12 @@ import createContextHook from '@nkzw/create-context-hook';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { UserProfile, Video, ConvexId } from '@/types';
+import convex from '@/lib/convex';
 
 const USER_KEY = '@reelfull_user';
 const USER_ID_KEY = '@reelfull_userId';
 const VIDEOS_KEY = '@reelfull_videos';
+const JWT_KEY = '@reelfull_jwt';
 
 export const [AppProvider, useApp] = createContextHook(() => {
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -13,6 +15,7 @@ export const [AppProvider, useApp] = createContextHook(() => {
   const [videos, setVideos] = useState<Video[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [syncedFromBackend, setSyncedFromBackend] = useState(false);
+  const [jwt, setJwt] = useState<string | null>(null);
   const [backendUser, setBackendUser] = useState<any>(null);
   const [recentlyDeletedIds, setRecentlyDeletedIds] = useState<Set<string>>(new Set());
 
@@ -22,10 +25,11 @@ export const [AppProvider, useApp] = createContextHook(() => {
 
   const loadData = async () => {
     try {
-      const [userData, userIdData, videosData] = await Promise.all([
+      const [userData, userIdData, videosData, jwtData] = await Promise.all([
         AsyncStorage.getItem(USER_KEY),
         AsyncStorage.getItem(USER_ID_KEY),
         AsyncStorage.getItem(VIDEOS_KEY),
+        AsyncStorage.getItem(JWT_KEY),
       ]);
 
       if (userData) {
@@ -55,6 +59,12 @@ export const [AppProvider, useApp] = createContextHook(() => {
           await AsyncStorage.removeItem(VIDEOS_KEY);
           setVideos([]);
         }
+      }
+
+      if (jwtData) {
+        setJwt(jwtData);
+        // 恢复 auth，让后续请求带 token（setAuth 期望 fetcher）
+        convex.setAuth(() => Promise.resolve(jwtData));
       }
     } catch (error) {
       console.error('Error loading data:', error);
@@ -317,13 +327,35 @@ export const [AppProvider, useApp] = createContextHook(() => {
     }
   }, []);
 
+  const saveJwt = useCallback(async (token: string) => {
+    try {
+      await AsyncStorage.setItem(JWT_KEY, token);
+      setJwt(token);
+      convex.setAuth(() => Promise.resolve(token));
+    } catch (error) {
+      console.error('Error saving jwt:', error);
+    }
+  }, []);
+
+  const clearJwt = useCallback(async () => {
+    try {
+      await AsyncStorage.removeItem(JWT_KEY);
+      setJwt(null);
+      convex.clearAuth();
+    } catch (error) {
+      console.error('Error clearing jwt:', error);
+    }
+  }, []);
+
   const clearData = useCallback(async () => {
     try {
-      await AsyncStorage.multiRemove([USER_KEY, USER_ID_KEY, VIDEOS_KEY]);
+      await AsyncStorage.multiRemove([USER_KEY, USER_ID_KEY, VIDEOS_KEY, JWT_KEY]);
       setUser(null);
       setUserId(null);
       setVideos([]);
       setSyncedFromBackend(false);
+      setJwt(null);
+      convex.clearAuth();
     } catch (error) {
       console.error('Error clearing data:', error);
     }
@@ -332,17 +364,20 @@ export const [AppProvider, useApp] = createContextHook(() => {
   return useMemo(() => ({
     user,
     userId,
+    jwt,
     videos,
     isLoading,
     syncedFromBackend,
     backendUser,
     saveUser,
     saveUserId,
+    saveJwt,
+    clearJwt,
     addVideo,
     updateVideoStatus,
     deleteVideo,
     clearData,
     syncVideosFromBackend,
     syncUserFromBackend,
-  }), [user, userId, videos, isLoading, syncedFromBackend, backendUser, saveUser, saveUserId, addVideo, updateVideoStatus, deleteVideo, clearData, syncVideosFromBackend, syncUserFromBackend]);
+  }), [user, userId, jwt, videos, isLoading, syncedFromBackend, backendUser, saveUser, saveUserId, saveJwt, clearJwt, addVideo, updateVideoStatus, deleteVideo, clearData, syncVideosFromBackend, syncUserFromBackend]);
 });

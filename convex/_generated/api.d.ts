@@ -9,6 +9,7 @@
  */
 
 import type * as aiServices from "../aiServices.js";
+import type * as auth from "../auth.js";
 import type * as http from "../http.js";
 import type * as phoneAuth from "../phoneAuth.js";
 import type * as prompts from "../prompts.js";
@@ -27,6 +28,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   aiServices: typeof aiServices;
+  auth: typeof auth;
   http: typeof http;
   phoneAuth: typeof phoneAuth;
   prompts: typeof prompts;

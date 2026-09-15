@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { mutation, query, internalMutation, action } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { signUserJWT, requireAuth } from "./auth";
 
 // ─── Internal: Store OTP (used by phoneAuth) ────────────────────────────────
 export const storeOTP = internalMutation({
@@ -96,10 +97,12 @@ export const verifyOTP = mutation({
       user = await ctx.db.get(userId);
     }
 
+    const userId = user?._id as string;
     return {
       success: true,
       userId: user?._id,
       onboardingCompleted: user?.onboardingCompleted || false,
+      token: await signUserJWT(userId),
     };
   },
 });
@@ -148,6 +151,7 @@ export const backdoorLogin = mutation({
       success: true,
       userId: user?._id,
       onboardingCompleted: user?.onboardingCompleted || false,
+      token: await signUserJWT(user?._id as string),
     };
   },
 });
@@ -180,6 +184,7 @@ export const testAccountLogin = mutation({
       success: true,
       userId: user?._id,
       onboardingCompleted: user?.onboardingCompleted || false,
+      token: await signUserJWT(user?._id as string),
     };
   },
 });
@@ -282,11 +287,11 @@ export const getVideoGenerationStatus = query({
 // ─── Update Push Token ──────────────────────────────────────────────────────
 export const updatePushToken = mutation({
   args: {
-    userId: v.id("users"),
     pushToken: v.string(),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.userId, {
+    const userId = await requireAuth(ctx);
+    await ctx.db.patch(userId as Id<"users">, {
       pushToken: args.pushToken,
     });
     return { success: true };
