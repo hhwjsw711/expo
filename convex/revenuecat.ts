@@ -94,10 +94,13 @@ export const internalProcessEvent = internalMutation({
     }
 
     switch (args.eventType) {
-      // Subscription lifecycle -> premium on
+      // Subscription lifecycle -> premium on.
+      // UNCANCELLATION: user re-enabled auto-renewal after cancelling
+      // (official RevenueCat event name; NOT "UNCANCELED_SUBSCRIPTION").
       case "INITIAL_PURCHASE":
       case "RENEWAL":
-      case "UNCANCELED_SUBSCRIPTION":
+      case "UNCANCELLATION":
+      case "SUBSCRIPTION_EXTENDED":
       case "NON_RENEWING_PURCHASE":
         if (args.productId && CREDIT_PRODUCT_MAP[args.productId]) {
           // Consumable credit pack
@@ -115,24 +118,36 @@ export const internalProcessEvent = internalMutation({
         }
         break;
 
-      // Subscription ended -> premium off
+      // Subscription ended -> premium off.
+      // EXPIRATION is the ONLY event where access should be revoked
+      // (official semantics). This covers both natural expiry and
+      // cancellation reaching end of paid period (expiration_reason
+      // will be e.g. CANCELED or BILLING_ERROR, both handled here).
       case "EXPIRATION":
-      case "SUBSCRIPTION_STOPPED": // custom reason mapping
-      case "CANCELLATION":
         await ctx.db.patch(args.userId, {
           isPremium: false,
         });
         break;
 
-      // Billing issue: RevenueCat docs recommend revoking access until resolved
+      // CANCELLATION: user turned off auto-renewal, but the current
+      // paid period is still active. Per official docs, access must
+      // NOT be revoked here - wait for EXPIRATION.
+      case "CANCELLATION":
+        return { success: true, reason: "no_state_change" };
+
+      // BILLING_ISSUE: payment failed but the subscription is not
+      // necessarily expired. RevenueCat may retry and there is a
+      // grace period (grace_period_expiration_at_ms). Access is kept;
+      // EXPIRATION with expiration_reason=BILLING_ERROR handles revoke.
       case "BILLING_ISSUE":
-        await ctx.db.patch(args.userId, {
-          isPremium: false,
-        });
-        break;
+        return { success: true, reason: "no_state_change" };
+
+      // BILLING_ISSUE resolved: payment succeeded again, keep premium.
+      case "BILLING_ISSUE_RESOLVED":
+        return { success: true, reason: "no_state_change" };
 
       default:
-        // TRANSFER, SUBSCRIPTION_EXTENDED, etc. - no state change needed
+        // TRANSFER, PRODUCT_CHANGE, etc. - no state change needed
         return { success: true, reason: "ignored_event_type" };
     }
 

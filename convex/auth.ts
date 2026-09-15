@@ -1,4 +1,5 @@
 import { SignJWT, importPKCS8 } from "jose";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 
 // ─── JWT constants ───────────────────────────────────────────────────────────
 // applicationID must match `aud` claim; issuer must match `iss` claim.
@@ -46,8 +47,6 @@ export async function signUserJWT(userId: string): Promise<string> {
 //   const userId = await requireAuth(ctx);
 // Note: actions do not have ctx.auth; use ctx.runMutation on a small
 // authenticated mutation to validate, or validate via a query.
-import type { MutationCtx, QueryCtx } from "./_generated/server";
-
 export async function requireAuth(
   ctx: MutationCtx | QueryCtx
 ): Promise<string> {

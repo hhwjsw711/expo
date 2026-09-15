@@ -79,12 +79,19 @@ http.route({
     }
 
     // 5. Apply the event
+    // Official RevenueCat field: expiration_at_ms (integer, milliseconds
+    // since epoch). Convert to ISO string for the users.subscriptionExpiresAt
+    // column (v.string() in schema).
     const event = body.event;
+    const expirationAtMs: number | undefined = event.expiration_at_ms;
     await ctx.runMutation(internal.revenuecat.internalProcessEvent, {
       userId,
       eventType,
       productId: event.product_id ?? undefined,
-      expiresDate: event.expires_date ?? undefined,
+      expiresDate:
+        typeof expirationAtMs === "number"
+          ? new Date(expirationAtMs).toISOString()
+          : undefined,
     });
 
     return new Response(JSON.stringify({ status: "ok" }), {
