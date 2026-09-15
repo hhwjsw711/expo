@@ -1,12 +1,12 @@
 module.exports = ({ config }) => {
   // Get the Convex URL from environment variables or use production URL
-  const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL || 'https://industrious-ibex-578.convex.cloud';
+  const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL || 'https://quick-echidna-290.convex.cloud';
 
   console.log('[app.config.js] Convex URL:', convexUrl);
 
   if (!process.env.EXPO_PUBLIC_CONVEX_URL) {
     console.warn(
-      '⚠️  EXPO_PUBLIC_CONVEX_URL is not set. Using production URL: https://industrious-ibex-578.convex.cloud'
+      '⚠️  EXPO_PUBLIC_CONVEX_URL is not set. Using production URL: https://quick-echidna-290.convex.cloud'
     );
   }
 

@@ -71,16 +71,12 @@
         {}
       ],
       [
-        "expo-notifications",
-        {
-          "icon": "./local/assets/notification_icon.png",
-          "color": "#F36A3F",
-          "defaultChannel": "default",
-          "sounds": [
-            "./local/assets/notification_sound.wav"
-          ],
-          "enableBackgroundRemoteNotifications": false
-        }
+      "expo-notifications",
+      {
+        "color": "#F36A3F",
+        "defaultChannel": "default",
+        "enableBackgroundRemoteNotifications": false
+      }
       ],
       [
         "expo-image-picker",
@@ -105,12 +101,6 @@
           "supportsPictureInPicture": true
         }
       ],
-      [
-        "expo-av",
-        {
-          "microphonePermission": "Allow $(PRODUCT_NAME) to access your microphone"
-        }
-      ]
     ],
     "experiments": {
       "typedRoutes": true

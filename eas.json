@@ -8,19 +8,19 @@
       "developmentClient": true,
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_CONVEX_URL": "https://mellow-horse-601.convex.cloud"
+        "EXPO_PUBLIC_CONVEX_URL": "https://vibrant-chinchilla-116.convex.cloud"
       }
     },
     "preview": {
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_CONVEX_URL": "https://industrious-ibex-578.convex.cloud"
+        "EXPO_PUBLIC_CONVEX_URL": "https://vibrant-chinchilla-116.convex.cloud"
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_CONVEX_URL": "https://industrious-ibex-578.convex.cloud"
+        "EXPO_PUBLIC_CONVEX_URL": "https://quick-echidna-290.convex.cloud"
       }
     }
   },

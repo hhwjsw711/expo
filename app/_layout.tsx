@@ -81,7 +81,7 @@ const queryClient = new QueryClient();
 const convexUrl = 
   process.env.EXPO_PUBLIC_CONVEX_URL || 
   Constants.expoConfig?.extra?.convexUrl ||
-  'https://industrious-ibex-578.convex.cloud';
+  'https://quick-echidna-290.convex.cloud';
 
 console.log('[App] Initializing Convex client...');
 console.log('[App] process.env.EXPO_PUBLIC_CONVEX_URL:', process.env.EXPO_PUBLIC_CONVEX_URL);
