@@ -144,7 +144,7 @@ export default function OnboardingScreen() {
               />
             </View>
             <Text style={styles.title}>
-              {step === 1 ? 'Welcome to Reelful' : 'Your Style'}
+              {step === 1 ? 'Welcome to Wordream' : 'Your Style'}
             </Text>
             <Text style={styles.subtitle}>
               {step === 1

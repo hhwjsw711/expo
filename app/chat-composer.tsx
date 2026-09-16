@@ -561,7 +561,7 @@ export default function ChatComposerScreen() {
   
   // Load local chat tips completion flag on mount
   useEffect(() => {
-    AsyncStorage.getItem('@reelfull_chatTipsCompleted').then((value) => {
+    AsyncStorage.getItem('@wordream_chatTipsCompleted').then((value) => {
       if (value === 'true') setChatTipsCompletedLocally(true);
     });
   }, []);
@@ -2133,7 +2133,7 @@ export default function ChatComposerScreen() {
     if (!ENABLE_TEST_RUN_MODE) {
       // Save locally first (guaranteed to persist)
       setChatTipsCompletedLocally(true);
-      AsyncStorage.setItem('@reelfull_chatTipsCompleted', 'true').catch(() => {});
+      AsyncStorage.setItem('@wordream_chatTipsCompleted', 'true').catch(() => {});
       // Also save to backend (best-effort)
       if (userId) {
         try {

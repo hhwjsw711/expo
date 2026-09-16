@@ -4,10 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { UserProfile, Video, ConvexId } from '@/types';
 import convex from '@/lib/convex';
 
-const USER_KEY = '@reelfull_user';
-const USER_ID_KEY = '@reelfull_userId';
-const VIDEOS_KEY = '@reelfull_videos';
-const JWT_KEY = '@reelfull_jwt';
+const USER_KEY = '@wordream_user';
+const USER_ID_KEY = '@wordream_userId';
+const VIDEOS_KEY = '@wordream_videos';
+const JWT_KEY = '@wordream_jwt';
 
 export const [AppProvider, useApp] = createContextHook(() => {
   const [user, setUser] = useState<UserProfile | null>(null);

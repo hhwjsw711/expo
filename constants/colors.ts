@@ -1,4 +1,4 @@
-// Reelful Design System - Colors
+// Wordream Design System - Colors
 // Clean, modern palette with warm cream background
 
 export default {

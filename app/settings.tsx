@@ -620,7 +620,7 @@ export default function SettingsScreen() {
                   </View>
                   <View>
                     <Text style={styles.menuItemText}>
-                      {videoGenerationStatus?.isPremium ? 'Buy More Credits' : 'Reelful Pro'}
+                      {videoGenerationStatus?.isPremium ? 'Buy More Credits' : 'Wordream Pro'}
                     </Text>
                     <Text style={styles.menuItemSubtext}>
                       {videoGenerationStatus?.isPremium 
@@ -965,7 +965,7 @@ export default function SettingsScreen() {
             <View testID="aboutModal" style={styles.editModalOverlay}>
               <View style={styles.editModalContent}>
                 <View style={styles.editModalHeader}>
-                  <Text style={styles.editModalTitle}>About Reelful</Text>
+                  <Text style={styles.editModalTitle}>About Wordream</Text>
                   <TouchableOpacity
                     testID="closeAboutModal"
                     onPress={() => setIsAboutOpen(false)}

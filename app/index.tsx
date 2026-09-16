@@ -156,7 +156,7 @@ export default function IntroScreen() {
           { paddingTop: insets.top + 40, opacity: titleFade },
         ]}
       >
-        <Text style={styles.title}>Reelful</Text>
+        <Text style={styles.title}>Wordream</Text>
       </Animated.View>
 
       {/* Rotating film reel on right side */}
@@ -213,14 +213,14 @@ export default function IntroScreen() {
             By tapping "Get Started", you agree to our{' '}
             <Text
               style={styles.termsLink}
-              onPress={() => Linking.openURL('https://www.reelful.app/terms.html')}
+              onPress={() => Linking.openURL('https://www.wordream.com/terms')}
             >
               Terms of Service
             </Text>
             {' '}and{' '}
             <Text
               style={styles.termsLink}
-              onPress={() => Linking.openURL('https://www.reelful.app/privacy.html')}
+              onPress={() => Linking.openURL('https://www.wordream.com/privacy')}
             >
               Privacy Policy
             </Text>

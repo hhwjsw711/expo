@@ -12,12 +12,12 @@ module.exports = ({ config }) => {
 
   return {
     ...config,
-    name: 'Reelful App',
-    slug: 'reelfull-app',
+    name: 'Wordream',
+    slug: 'wordream',
     version: '1.0.0',
     orientation: 'portrait',
     icon: './assets/images/icon.png',
-    scheme: 'myapp',
+    scheme: 'wordream',
     userInterfaceStyle: 'automatic',
     newArchEnabled: false,
     splash: {
@@ -27,7 +27,7 @@ module.exports = ({ config }) => {
     },
     ios: {
       supportsTablet: false,
-      bundleIdentifier: 'app.rork.reelfull',
+      bundleIdentifier: 'app.wordream',
       infoPlist: {
         UIBackgroundModes: ['audio'],
         NSMicrophoneUsageDescription: 'Allow $(PRODUCT_NAME) to access your microphone',
@@ -42,7 +42,7 @@ module.exports = ({ config }) => {
         foregroundImage: './assets/images/adaptive-icon.png',
         backgroundColor: '#FAF9F5',
       },
-      package: 'app.rork.reelfull',
+      package: 'app.wordream',
       permissions: [
         'android.permission.RECORD_AUDIO',
         'android.permission.CAMERA',

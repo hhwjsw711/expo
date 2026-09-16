@@ -1,4 +1,4 @@
-// Reelful Design System - Spacing & Layout
+// Wordream Design System - Spacing & Layout
 // Consistent spacing scale for the app
 
 // Spacing Scale (in pixels)

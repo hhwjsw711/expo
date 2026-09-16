@@ -590,7 +590,7 @@ export const createElevenLabsVoice = action({
       console.log("[createVoice] voice_clone uploaded, file_id:", cloneFileId);
 
       // Call voice_clone API
-      const customVoiceId = `reelful_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      const customVoiceId = `wordream_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
       console.log("[createVoice] calling voice_clone with voice_id:", customVoiceId);
 
       const cloneResp = await fetch("https://api.minimaxi.com/v1/voice_clone", {
@@ -722,7 +722,7 @@ export const previewVoice = action({
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GENERATE CHAT SCRIPT (reelfull-app specific — called by chat-composer.tsx)
+// GENERATE CHAT SCRIPT (wordream-app specific — called by chat-composer.tsx)
 // Wraps generateScript with conversation context and saves to DB
 // ═══════════════════════════════════════════════════════════════════════════
 export const generateChatScript = action({
@@ -802,7 +802,7 @@ export const generateChatScript = action({
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GENERATE SCRIPT PREVIEW AUDIO (reelfull-app specific — called by chat-composer.tsx)
+// GENERATE SCRIPT PREVIEW AUDIO (wordream-app specific — called by chat-composer.tsx)
 // Uses MiniMax TTS to generate a quick audio preview of a script
 // ═══════════════════════════════════════════════════════════════════════════
 export const generateScriptPreviewAudio = action({

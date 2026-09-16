@@ -47,7 +47,7 @@ export const createProject = mutation({
   },
 });
 
-// ─── Create Chat Project (reelfull-app: chat-composer entry point) ──────────
+// ─── Create Chat Project (wordream-app: chat-composer entry point) ──────────
 export const createChatProject = mutation({
   args: {
     userId: v.optional(v.id("users")),
@@ -473,7 +473,7 @@ export const updateProjectStatus = mutation({
   },
 });
 
-// ─── Update Project with Reelful Data ───────────────────────────────────────
+// ─── Update Project with Wordream Data ───────────────────────────────────────
 export const updateProjectWithReelfulData = mutation({
   args: {
     id: v.id("projects"),

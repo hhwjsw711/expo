@@ -104,7 +104,7 @@ export default function ResultScreen() {
       if (Platform.OS === 'web') {
         const link = document.createElement('a');
         link.href = videoUrl;
-        link.download = `reelfull_${Date.now()}.mp4`;
+        link.download = `wordream_${Date.now()}.mp4`;
         link.click();
         return;
       }
@@ -119,7 +119,7 @@ export default function ResultScreen() {
         return;
       }
 
-      const fileUri = `${FileSystem.documentDirectory}reelfull_${Date.now()}.mp4`;
+      const fileUri = `${FileSystem.documentDirectory}wordream_${Date.now()}.mp4`;
       
       // Download from URL
       const downloadResult = await FileSystem.downloadAsync(videoUrl, fileUri);

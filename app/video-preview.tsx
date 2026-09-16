@@ -918,7 +918,7 @@ export default function VideoPreviewScreen() {
           setIsDownloading(true);
           setDownloadProgress(0);
 
-          const fileUri = `${FileSystem.documentDirectory}reelfull_${Date.now()}.mp4`;
+          const fileUri = `${FileSystem.documentDirectory}wordream_${Date.now()}.mp4`;
           const downloadResumable = FileSystem.createDownloadResumable(
             url, fileUri, {},
             (progress) => {
@@ -934,7 +934,7 @@ export default function VideoPreviewScreen() {
 
           let fileUriToSave = result.uri;
           if (fileUriToSave.startsWith('file://')) {
-            const safePath = `${FileSystem.documentDirectory}reelfull_${Date.now()}.mp4`;
+            const safePath = `${FileSystem.documentDirectory}wordream_${Date.now()}.mp4`;
             await FileSystem.copyAsync({ from: fileUriToSave, to: safePath });
             fileUriToSave = safePath;
           }
@@ -1174,7 +1174,7 @@ export default function VideoPreviewScreen() {
   
   // Load local video tips completion flag on mount
   useEffect(() => {
-    AsyncStorage.getItem('@reelfull_videoPreviewTipsCompleted').then((value) => {
+    AsyncStorage.getItem('@wordream_videoPreviewTipsCompleted').then((value) => {
       if (value === 'true') setVideoTipsCompletedLocally(true);
     });
   }, []);
@@ -1614,7 +1614,7 @@ export default function VideoPreviewScreen() {
     if (!ENABLE_TEST_RUN_MODE) {
       // Save locally first (guaranteed to persist)
       setVideoTipsCompletedLocally(true);
-      AsyncStorage.setItem('@reelfull_videoPreviewTipsCompleted', 'true').catch(() => {});
+      AsyncStorage.setItem('@wordream_videoPreviewTipsCompleted', 'true').catch(() => {});
       // Also save to backend (best-effort)
       if (userId) {
         try {
@@ -1732,7 +1732,7 @@ export default function VideoPreviewScreen() {
         // Web: trigger browser download
         const link = document.createElement('a');
         link.href = downloadUrl;
-        link.download = `reelfull_${Date.now()}.mp4`;
+        link.download = `wordream_${Date.now()}.mp4`;
         link.click();
         setDownloadSuccess(true);
       } else {
@@ -1745,7 +1745,7 @@ export default function VideoPreviewScreen() {
           fileUriToSave = downloadUrl;
         } else {
           // Download to local file first with progress tracking
-          const fileUri = `${FileSystem.documentDirectory}reelfull_${Date.now()}.mp4`;
+          const fileUri = `${FileSystem.documentDirectory}wordream_${Date.now()}.mp4`;
           
           console.log('[Download] Downloading video from:', downloadUrl);
           console.log('[Download] To local path:', fileUri);
@@ -1780,7 +1780,7 @@ export default function VideoPreviewScreen() {
         // The cache directory may have restricted permissions on iOS.
         // Copy to documentDirectory first for a reliable, accessible file path.
         if (fileUriToSave.startsWith('file://')) {
-          const safePath = `${FileSystem.documentDirectory}reelfull_${Date.now()}.mp4`;
+          const safePath = `${FileSystem.documentDirectory}wordream_${Date.now()}.mp4`;
           console.log('[Download] Copying from cache to:', safePath);
           await FileSystem.copyAsync({ from: fileUriToSave, to: safePath });
           fileUriToSave = safePath;

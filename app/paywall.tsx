@@ -482,7 +482,7 @@ export default function PaywallScreen() {
               {/* Hero Section */}
               <View style={styles.heroSection}>
                 <Text style={styles.title}>
-                  {showCreditsView ? 'Buy More Credits' : 'Unlock Reelful Pro'}
+                  {showCreditsView ? 'Buy More Credits' : 'Unlock Wordream Pro'}
                 </Text>
                 <Text style={styles.subtitle}>
                   {showCreditsView 

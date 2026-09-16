@@ -1,4 +1,4 @@
-// Reelful Design System - Typography
+// Wordream Design System - Typography
 // Uses PP Neue Montreal font family
 
 export const Fonts = {

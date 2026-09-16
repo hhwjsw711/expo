@@ -14,7 +14,7 @@ import {
 } from 'expo-audio';
 import Colors from '@/constants/colors';
 
-const SCRIPT_TEXT = `Wow, Reelful is such a cool app! It helps me turn my photos and videos into a ready-to-share clip using just one prompt. I don't need to record my voice, search for music, or spend hours editing. Reelful automatically adds voice-over, music, and captions. It makes content creation fast, fun, and effortless. I can't wait to use Reelful for my next video!`;
+const SCRIPT_TEXT = `Wow, Wordream is such a cool app! It helps me turn my photos and videos into a ready-to-share clip using just one prompt. I don't need to record my voice, search for music, or spend hours editing. Wordream automatically adds voice-over, music, and captions. It makes content creation fast, fun, and effortless. I can't wait to use Wordream for my next video!`;
 
 interface VoiceRecorderProps {
   onRecordingComplete: (uri: string) => void;
