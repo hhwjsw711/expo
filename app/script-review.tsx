@@ -328,6 +328,10 @@ export default function ScriptReviewScreen() {
           const errorMessage = submitError instanceof Error ? submitError.message : String(submitError);
           if (errorMessage.includes('FREE_TIER_LIMIT_REACHED')) {
             console.log('[script-review] User has reached free tier limit, showing paywall');
+            // Roll back the optimistic video — the project was never submitted
+            if (!isTestRun && projectId) {
+              deleteVideo(projectId);
+            }
             setIsSubmitting(false);
             router.push('/paywall');
             return;
