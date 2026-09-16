@@ -17,7 +17,6 @@ import { api } from "@/convex/_generated/api";
 import Colors from '@/constants/colors';
 import { useApp } from '@/contexts/AppContext';
 import { Asset } from 'expo-asset';
-import { uploadFileToConvex } from '@/lib/api-helpers';
 import { Fonts } from '@/constants/typography';
 import { ENABLE_TEST_RUN_MODE } from '@/constants/config';
 
@@ -50,8 +49,6 @@ export default function ScriptReviewScreen() {
   const updateProjectScript = useMutation(api.tasks.updateProjectScript);
   const regenerateScript = useAction(api.tasks.regenerateScript);
   const markProjectSubmitted = useMutation(api.tasks.markProjectSubmitted);
-  const markProjectSubmittedTestMode = useMutation(api.tasks.markProjectSubmittedTestMode);
-  const generateUploadUrl = useMutation(api.tasks.generateUploadUrl);
   const updateProjectRenderMode = useMutation(api.tasks.updateProjectRenderMode);
   const updateProjectVoiceSpeed = useMutation(api.tasks.updateProjectVoiceSpeed);
   const updateProjectAudioSettings = useMutation(api.tasks.updateProjectAudioSettings);
@@ -82,7 +79,8 @@ export default function ScriptReviewScreen() {
       // Update editedScript when project script changes (e.g., after regeneration)
       // But only if we're not currently editing
       if (!isEditing && project.script !== lastProjectScript) {
-      // Replace ??? with ? for display
+      // Decode legacy ??? encoding to ? for display
+      // (new data stores ? as-is; this is for backward compat with old scripts)
       setEditedScript(project.script.replace(/\?\?\?/g, "?"));
         setLastProjectScript(project.script);
       } else if (!editedScript) {
@@ -116,7 +114,7 @@ export default function ScriptReviewScreen() {
 
     try {
       // Replace ? with ??? before saving (but not if it's already ???)
-      const scriptToSave = editedScript.trim().replace(/\?(?!\?\?)/g, "???");
+      const scriptToSave = editedScript.trim();
       await updateProjectScript({
         id: projectId,
         script: scriptToSave,
@@ -220,10 +218,7 @@ export default function ScriptReviewScreen() {
 
     // For normal mode, add video to context FIRST, then show alert
     if (!isTestRun) {
-      // Get the script to save
-      const scriptToSave = editedScript !== project.script
-        ? editedScript.trim().replace(/\?(?!\?\?)/g, "???")
-        : project.script.replace(/\?(?!\?\?)/g, "???");
+      const scriptToSave = editedScript.trim();
 
       // Optimistically update video status to "processing" BEFORE showing alert
       console.log('[script-review] Adding video with processing status before alert...');
@@ -265,10 +260,8 @@ export default function ScriptReviewScreen() {
     if (!projectId || !project?.script) return;
 
     try {
-      // Save any edits (replace ? with ??? before saving, matching studio behavior)
-      const scriptToSave = editedScript !== project.script
-        ? editedScript.trim().replace(/\?(?!\?\?)/g, "???")
-        : project.script.replace(/\?(?!\?\?)/g, "???");
+    // Save any edits — store ? as-is, no more ??? encoding
+      const scriptToSave = editedScript.trim();
 
       if (editedScript !== project.script || scriptToSave !== project.script) {
         console.log('[script-review] Saving edited script...');

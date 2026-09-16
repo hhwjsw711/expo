@@ -1570,7 +1570,7 @@ export default function ChatComposerScreen() {
     // For forked projects or local messages, update project script directly
     // (Message IDs from original project won't exist in the forked project)
     if (hasForkedFromVideo || editingMessageId.startsWith('assistant-') || editingMessageId.startsWith('user-')) {
-      const encodedScript = newScript.replace(/\?(?!\?\?)/g, '???');
+      const encodedScript = newScript;
       try {
         await updateProjectScript({
           id: targetProjectId as any,
@@ -1606,7 +1606,7 @@ export default function ChatComposerScreen() {
       try {
         await updateChatMessage({
           messageId: editingMessageId as any,
-          content: newScript.replace(/\?(?!\?\?)/g, '???'),
+          content: newScript,
         });
       } catch (error) {
         console.error('Failed to update message:', error);
@@ -1931,7 +1931,7 @@ export default function ChatComposerScreen() {
       // (e.g. after forking from history, the forked project may not have the edited script yet)
       await updateProjectScript({
         id: targetProjectId as any,
-        script: latestScript.replace(/\?(?!\?\?)/g, '???'),
+        script: latestScript,
       });
       
       // Mark project as submitted FIRST (changes backend status to 'processing')

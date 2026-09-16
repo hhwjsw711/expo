@@ -74,7 +74,7 @@ export default function ResultScreen() {
     const handleSaveToFeed = async () => {
       if (!project || !videoUrl || isSaved) return;
 
-      // Transform script: replace "???" with "?"
+      // Decode legacy ??? encoding to ? (new data stores ? as-is)
       const transformedScript = project.script?.replace(/\?\?\?/g, '?');
 
       const video = {
@@ -100,7 +100,17 @@ export default function ResultScreen() {
     try {
       setIsDownloading(true);
 
-      const { status, accessPrivileges } = await MediaLibrary.requestPermissionsAsync();
+      // Web platform: use anchor tag download (no FileSystem/MediaLibrary)
+      if (Platform.OS === 'web') {
+        const link = document.createElement('a');
+        link.href = videoUrl;
+        link.download = `reelfull_${Date.now()}.mp4`;
+        link.click();
+        return;
+      }
+
+      // Native: request permissions, download, save to gallery
+      const { status } = await MediaLibrary.requestPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert(
           'Permission Required',
@@ -109,27 +119,20 @@ export default function ResultScreen() {
         return;
       }
 
-      if (Platform.OS === 'web') {
-        const link = document.createElement('a');
-        link.href = videoUrl;
-        link.download = `reelfull_${Date.now()}.mp4`;
-        link.click();
+      const fileUri = `${FileSystem.documentDirectory}reelfull_${Date.now()}.mp4`;
+      
+      // Download from URL
+      const downloadResult = await FileSystem.downloadAsync(videoUrl, fileUri);
+      
+      if (downloadResult.status === 200) {
+        await MediaLibrary.saveToLibraryAsync(downloadResult.uri);
+
+        // Clean up the temp file
+        try { await FileSystem.deleteAsync(downloadResult.uri, { idempotent: true }); } catch (_) {}
+
+        Alert.alert('Success', 'Video saved to your gallery!');
       } else {
-        const fileUri = `${FileSystem.documentDirectory}reelfull_${Date.now()}.mp4`;
-        
-        // Download from URL
-        const downloadResult = await FileSystem.downloadAsync(videoUrl, fileUri);
-        
-        if (downloadResult.status === 200) {
-          await MediaLibrary.saveToLibraryAsync(downloadResult.uri);
-
-          // Clean up the temp file
-          try { await FileSystem.deleteAsync(downloadResult.uri, { idempotent: true }); } catch (_) {}
-
-          Alert.alert('Success', 'Video saved to your gallery!');
-        } else {
-          throw new Error('Download failed');
-        }
+        throw new Error('Download failed');
       }
     } catch (error) {
       console.error('Download error:', error);
@@ -143,7 +146,7 @@ export default function ResultScreen() {
     if (!project?.script) return;
 
     try {
-      // Transform script: replace "???" with "?"
+      // Decode legacy ??? encoding to ? (new data stores ? as-is)
       const transformedScript = project.script.replace(/\?\?\?/g, '?');
       
       await Clipboard.setStringAsync(transformedScript);

@@ -25,7 +25,11 @@ import {
   type AudioPlayer,
 } from 'expo-audio';
 import * as VideoThumbnails from 'expo-video-thumbnails';
-import * as FileSystem from 'expo-file-system/legacy';
+// Lazy-load FileSystem to avoid crash on web platform
+let FileSystem: any = null;
+if (Platform.OS !== 'web') {
+  FileSystem = require('expo-file-system/legacy');
+}
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAction, useMutation, useQuery } from "convex/react";

@@ -422,11 +422,6 @@ export default function FeedTab() {
   const tabIndicatorAnim = useRef(new Animated.Value(0)).current;
   const navigationLockRef = useRef<{ key: string; startedAt: number } | null>(null);
   
-  const hasPendingVideos = useMemo(() =>
-    videos.some(v => v.status === 'pending' || v.status === 'processing' || v.status === 'preparing'),
-    [videos]
-  );
-  
   const backendUser = useQuery(
     api.users.getCurrentUser,
     userId ? { userId } : "skip"

@@ -111,7 +111,7 @@ export const [AppProvider, useApp] = createContextHook(() => {
     try {
       console.log('[sync] Syncing videos from backend, count:', backendProjects.length);
       
-      // Helper function to transform script: replace "???" with "?"
+      // Decode legacy ??? encoding to ? (new data stores ? as-is)
       const transformScript = (script?: string) => script?.replace(/\?\?\?/g, '?');
       
       // Convert backend projects to Video format
