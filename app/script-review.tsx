@@ -113,7 +113,7 @@ export default function ScriptReviewScreen() {
     }
 
     try {
-      // Replace ? with ??? before saving (but not if it's already ???)
+      // Store script as-is (? is safe in Convex strings, no encoding needed)
       const scriptToSave = editedScript.trim();
       await updateProjectScript({
         id: projectId,

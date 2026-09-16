@@ -1570,11 +1570,11 @@ export default function ChatComposerScreen() {
     // For forked projects or local messages, update project script directly
     // (Message IDs from original project won't exist in the forked project)
     if (hasForkedFromVideo || editingMessageId.startsWith('assistant-') || editingMessageId.startsWith('user-')) {
-      const encodedScript = newScript;
+      const scriptToSave = newScript;
       try {
         await updateProjectScript({
           id: targetProjectId as any,
-          script: encodedScript,
+          script: scriptToSave,
         });
       } catch (error) {
         console.error('Failed to update script:', error);
@@ -1594,7 +1594,7 @@ export default function ChatComposerScreen() {
           if (matchingBackendMsg) {
             await updateChatMessage({
               messageId: matchingBackendMsg._id,
-              content: encodedScript,
+              content: scriptToSave,
             });
           }
         } catch (error) {
