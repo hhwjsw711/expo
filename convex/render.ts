@@ -6,6 +6,7 @@ import { Sandbox } from "e2b";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { prompts } from "./prompts";
+import { requireAuth } from "./auth";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -284,6 +285,7 @@ export const createSequence = action({
     sandboxId?: string;
     error?: string;
   }> => {
+    await requireAuth(ctx);
     console.log("[sequence] starting for project:", projectId);
 
     // Acquire render lock to prevent duplicate renders
@@ -468,6 +470,7 @@ export const renderFinalVideo = action({
     renderedVideoUrl?: string;
     error?: string;
   }> => {
+    await requireAuth(ctx);
     console.log("[render-final] starting for project:", projectId);
 
     let sandbox: Sandbox | undefined;

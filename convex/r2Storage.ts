@@ -3,6 +3,7 @@
 import { action } from "./_generated/server";
 import { v } from "convex/values";
 import { api } from "./_generated/api";
+import { requireAuth } from "./auth";
 
 // Minimal R2 storage stub.
 // The full implementation uses Cloudflare R2 for direct file uploads from mobile.
@@ -29,6 +30,7 @@ export const generateMultipleR2UploadUrls = action({
     ),
   },
   handler: async (ctx, { files }) => {
+    await requireAuth(ctx);
     console.log("[r2Storage] Generating upload URLs for", files.length, "files (using Convex storage fallback)");
 
     const results = [];

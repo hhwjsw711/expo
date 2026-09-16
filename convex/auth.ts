@@ -1,5 +1,5 @@
 import { SignJWT, importPKCS8 } from "jose";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx, ActionCtx } from "./_generated/server";
 
 // ─── JWT constants ───────────────────────────────────────────────────────────
 // applicationID must match `aud` claim; issuer must match `iss` claim.
@@ -45,10 +45,12 @@ export async function signUserJWT(userId: string): Promise<string> {
 //
 // Usage in a protected mutation/query/action:
 //   const userId = await requireAuth(ctx);
-// Note: actions do not have ctx.auth; use ctx.runMutation on a small
-// authenticated mutation to validate, or validate via a query.
+// Works in all three contexts: MutationCtx, QueryCtx, ActionCtx.
+// In actions, ctx.auth is available when called from an authenticated client.
+// Note: scheduler-triggered actions have no auth context — do not add
+// requireAuth to functions called via ctx.scheduler.runAfter().
 export async function requireAuth(
-  ctx: MutationCtx | QueryCtx
+  ctx: MutationCtx | QueryCtx | ActionCtx
 ): Promise<string> {
   const identity = await ctx.auth.getUserIdentity();
   if (!identity) {

@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery, mutation } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
+import { requireAuth } from "./auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RevenueCat webhook ingestion - internal mutations/queries called by
@@ -22,6 +23,7 @@ const CREDIT_PRODUCT_MAP: Record<string, number> = {
 export const bindRevenueCatUser = mutation({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
+    await requireAuth(ctx);
     const user = await ctx.db.get(args.userId);
     if (!user) {
       throw new Error("user not found");

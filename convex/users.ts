@@ -311,6 +311,7 @@ export const completeOnboarding = action({
     voiceRecordingStorageId: v.optional(v.id("_storage")),
   },
   handler: async (ctx, args) => {
+    await requireAuth(ctx);
     let voiceRecordingUrl: string | undefined;
     let voiceId: string | undefined;
     let voicePreviewStorageId: Id<"_storage"> | undefined;
@@ -383,6 +384,7 @@ export const internalCompleteOnboarding = internalMutation({
 export const generateUploadUrl = mutation({
   args: {},
   handler: async (ctx) => {
+    await requireAuth(ctx);
     return await ctx.storage.generateUploadUrl();
   },
 });
@@ -402,6 +404,7 @@ export const updateProfile = action({
     voiceRecordingStorageId: v.optional(v.id("_storage")),
   },
   handler: async (ctx, args): Promise<{ success: boolean; error?: string }> => {
+    await requireAuth(ctx);
     const updates: any = {};
     if (args.name !== undefined) updates.name = args.name;
     if (args.preferredStyle !== undefined) updates.preferredStyle = args.preferredStyle;
@@ -451,6 +454,7 @@ export const updateSelectedVoice = mutation({
     voiceId: v.string(),
   },
   handler: async (ctx, args) => {
+    await requireAuth(ctx);
     await ctx.db.patch(args.userId, {
       selectedVoiceId: args.voiceId,
     });
@@ -461,6 +465,7 @@ export const updateSelectedVoice = mutation({
 export const deleteAccount = action({
   args: { userId: v.id("users") },
   handler: async (ctx, args): Promise<{ success: boolean; error?: string }> => {
+    await requireAuth(ctx);
     // Delete user's projects
     const projects = await ctx.runQuery(api.tasks.getProjects, { userId: args.userId });
     for (const project of projects) {
@@ -495,6 +500,7 @@ export const redeemPromoCode = mutation({
     code: v.string(),
   },
   handler: async (ctx, args) => {
+    await requireAuth(ctx);
     let promoCodes: Record<string, number> = {};
     if (process.env.PROMO_CODES) {
       try {
@@ -524,6 +530,7 @@ export const redeemPromoCode = mutation({
 export const completeChatTips = mutation({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
+    await requireAuth(ctx);
     await ctx.db.patch(args.userId, { chatTipsCompleted: true });
     return { success: true };
   },
@@ -533,6 +540,7 @@ export const completeChatTips = mutation({
 export const completeVideoPreviewTips = mutation({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
+    await requireAuth(ctx);
     await ctx.db.patch(args.userId, { videoPreviewTipsCompleted: true });
     return { success: true };
   },

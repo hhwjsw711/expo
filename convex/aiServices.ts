@@ -6,6 +6,7 @@ import { fal } from "@fal-ai/client";
 import { api } from "./_generated/api";
 import { prompts } from "./prompts";
 import type { Id } from "./_generated/dataModel";
+import { requireAuth } from "./auth";
 
 // ─── Helper: Format time for SRT ────────────────────────────────────────────
 function formatTime(seconds: number): string {
@@ -417,6 +418,7 @@ export const generateScript = action({
     style: v.optional(v.string()),
   },
   handler: async (ctx, { prompt, imageUrls = [], style = "professional" }) => {
+    await requireAuth(ctx);
     console.log("[script] generating script for prompt:", prompt);
     console.log("[script] processing", imageUrls.length, "media files");
 
@@ -557,6 +559,7 @@ export const createElevenLabsVoice = action({
     name: v.string(),
   },
   handler: async (ctx, { audioUrl, name }): Promise<{ success: boolean; voiceId?: string; previewStorageId?: Id<"_storage">; error?: string }> => {
+    await requireAuth(ctx);
     console.log("[createVoice] creating MiniMax voice for:", name);
     try {
       const apiKey = process.env.MINIMAX_API_KEY;
@@ -655,6 +658,7 @@ export const createElevenLabsVoice = action({
 export const previewVoice = action({
   args: { voiceId: v.string() },
   handler: async (ctx, { voiceId }): Promise<{ success: boolean; audioBase64?: string; error?: string }> => {
+    await requireAuth(ctx);
     console.log("[previewVoice] generating for:", voiceId);
     try {
       const apiKey = process.env.MINIMAX_API_KEY;
@@ -740,6 +744,7 @@ export const generateChatScript = action({
     saveAndNotify: v.boolean(),
   },
   handler: async (ctx, args): Promise<{ success: boolean; script?: string; error?: string }> => {
+    await requireAuth(ctx);
     try {
       const project = await ctx.runQuery(api.tasks.getProject, { id: args.projectId });
       if (!project) throw new Error("project not found");
@@ -806,6 +811,7 @@ export const generateScriptPreviewAudio = action({
     userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args): Promise<{ success: boolean; audioUrl?: string; error?: string }> => {
+    await requireAuth(ctx);
     try {
       const apiKey = process.env.MINIMAX_API_KEY;
       if (!apiKey) {
