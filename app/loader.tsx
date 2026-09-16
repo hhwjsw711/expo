@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Sparkles } from 'lucide-react-native';
-import { useEffect, useRef, useState, memo } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Animated, StyleSheet, Text, View, Alert, TouchableOpacity } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useQuery, useAction } from "convex/react";
@@ -18,6 +18,9 @@ export default function LoaderScreen() {
   const createSequence = useAction(api.render.createSequence);
   const renderTriggeredRef = useRef(false);
   const renderStepRef = useRef<'sequence' | 'final' | null>(null);
+  const failedAlertShownRef = useRef(false);
+  const retryCountRef = useRef(0);
+  const MAX_RETRIES = 2;
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const rotateAnim = useRef(new Animated.Value(0)).current;
@@ -30,12 +33,12 @@ export default function LoaderScreen() {
       }
       
       // Update immediately
-      const elapsed = Math.floor((Date.now() - project.submittedAt) / 1000);
+      const elapsed = Math.max(0, Math.floor((Date.now() - project.submittedAt) / 1000));
       setElapsedSeconds(elapsed);
       
       // Then update every second
       timerRef.current = setInterval(() => {
-        const newElapsed = Math.floor((Date.now() - project.submittedAt) / 1000);
+        const newElapsed = Math.max(0, Math.floor((Date.now() - project.submittedAt) / 1000));
         setElapsedSeconds(newElapsed);
       }, 1000);
       
@@ -104,7 +107,16 @@ export default function LoaderScreen() {
         .then((result) => {
           if (!result?.success) {
             console.log('[loader] Sequence not started:', result?.error || 'Unknown reason');
-            renderTriggeredRef.current = false;
+            // Do NOT reset renderTriggeredRef — this prevents infinite retry loops.
+            // The user can manually retry by navigating back to the feed and re-submitting.
+            // Only retry if we haven't exhausted our retry budget.
+            if (retryCountRef.current < MAX_RETRIES) {
+              retryCountRef.current += 1;
+              renderTriggeredRef.current = false;
+              console.log('[loader] Will retry (attempt', retryCountRef.current + 1, 'of', MAX_RETRIES + 1, ')');
+            } else {
+              console.log('[loader] Max retries exhausted, not retrying');
+            }
             renderStepRef.current = null;
             return;
           }
@@ -116,7 +128,7 @@ export default function LoaderScreen() {
         .catch((error) => {
           console.error('[loader] Sequence error:', error);
           Alert.alert('Error', `Sequence creation failed: ${error}`);
-          renderTriggeredRef.current = false;
+          // Do NOT reset renderTriggeredRef on error — prevents infinite retry.
           renderStepRef.current = null;
         });
     } else if (project.status === "completed" && !hasAllMediaAssets && !renderTriggeredRef.current) {
@@ -142,6 +154,10 @@ export default function LoaderScreen() {
         params: { projectId: projectId.toString() },
       });
     } else if (project?.status === 'failed') {
+      // Guard against duplicate Alerts — only show once per failure
+      if (failedAlertShownRef.current) return;
+      failedAlertShownRef.current = true;
+      
       const errorMessage = project.error || 'Video generation failed. Please try again.';
       console.error('[loader] Render failed:', errorMessage);
       
@@ -174,14 +190,19 @@ export default function LoaderScreen() {
     rotateAnim.setValue(0);
     
     // Start smooth continuous rotation
-    Animated.loop(
+    const animation = Animated.loop(
       Animated.timing(rotateAnim, {
         toValue: 1,
         duration: 2000, // Smoother, faster rotation
         useNativeDriver: true,
         isInteraction: false, // Don't block interactions
       })
-    ).start();
+    );
+    animation.start();
+    
+    return () => {
+      animation.stop();
+    };
   }, [rotateAnim]);
 
   const formatTime = (seconds: number) => {

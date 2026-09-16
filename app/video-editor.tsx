@@ -26,6 +26,7 @@ import {
 } from 'expo-audio';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import * as FileSystem from 'expo-file-system/legacy';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -1180,7 +1181,30 @@ export default function VideoEditorScreen() {
         }}]);
     } catch (e) {
       console.error('[video-editor] Save failed:', e);
-      Alert.alert('Error', 'Failed to save changes. Please try again.');
+      // Cache the edit state to AsyncStorage so it can be recovered on next open
+      try {
+        const state: EditorState = {
+          segments, voiceoverEnabled, musicEnabled, originalSoundEnabled,
+          captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume,
+          captions, playheadTime, totalDuration,
+        };
+        const draftKey = `@editor_draft_${projectId}`;
+        await AsyncStorage.setItem(draftKey, JSON.stringify({
+          timelineJson: buildTimelineJson(state, editorData.timeline),
+          assContent: originalAssContent && captions.length > 0
+            ? rebuildAssContent(originalAssContent, captions)
+            : undefined,
+          savedAt: Date.now(),
+        }));
+        console.log('[video-editor] Draft cached to AsyncStorage');
+      } catch (cacheErr) {
+        console.warn('[video-editor] Failed to cache draft:', cacheErr);
+      }
+      Alert.alert(
+        'Save Failed',
+        'Your edits have been saved as a draft. Please try again.',
+        [{ text: 'OK' }]
+      );
     } finally {
       setSaving(false);
     }

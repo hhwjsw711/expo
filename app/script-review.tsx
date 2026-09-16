@@ -43,7 +43,7 @@ export default function ScriptReviewScreen() {
   const isTestRun = params.testRun === 'true';
   // Test mode is active if ENABLE_TEST_RUN_MODE is true AND we're coming from composer with testMode flag
   const isTestMode = params.testMode === 'true' || (ENABLE_TEST_RUN_MODE && projectId === 'test-mode-project');
-  const { addVideo, videos } = useApp();
+  const { addVideo, deleteVideo, videos } = useApp();
 
   // Convex hooks - SKIP all queries in test mode to avoid API calls
   const project = useQuery(api.tasks.getProject, (!isTestMode && projectId) ? { id: projectId } : "skip");
@@ -346,6 +346,12 @@ export default function ScriptReviewScreen() {
       }
     } catch (error) {
       console.error('[script-review] Approve error:', error);
+      // Roll back the optimistic addVideo so the feed doesn't show a
+      // permanently stuck "processing" card that was never submitted.
+      if (!isTestRun && projectId) {
+        console.log('[script-review] Rolling back optimistic video:', projectId);
+        deleteVideo(projectId);
+      }
       Alert.alert('Error', `Failed to start generation: ${error instanceof Error ? error.message : 'Unknown error'}`);
       setIsSubmitting(false);
     }
