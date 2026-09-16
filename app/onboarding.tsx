@@ -1,4 +1,5 @@
 import { useRouter } from 'expo-router';
+import { Plus, Send } from 'lucide-react-native';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   KeyboardAvoidingView,
@@ -11,7 +12,6 @@ import {
   View,
   Alert,
   Keyboard,
-  LayoutChangeEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAction } from 'convex/react';
@@ -134,6 +134,8 @@ export default function OnboardingScreen() {
   const inputRef = useRef<TextInput>(null);
   const msgIdCounter = useRef(0);
   const userName = useRef('');
+  const isProcessingRef = useRef(false);
+  const currentStepRef = useRef(0);
 
   const nextId = () => `msg-${++msgIdCounter.current}`;
 
@@ -181,7 +183,11 @@ export default function OnboardingScreen() {
   };
 
   const advanceStep = (userAnswer: string) => {
-    const step = currentStep;
+    // Guard against rapid double-tap: lock during the typing delay
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
+
+    const step = currentStepRef.current;
     addUserMessage(userAnswer);
 
     // Store name from first answer
@@ -193,23 +199,23 @@ export default function OnboardingScreen() {
 
     if (nextStepIndex < ONBOARDING_STEPS.length) {
       const nextStep = ONBOARDING_STEPS[nextStepIndex];
-      // Replace {name} placeholder
       const assistantText = nextStep.assistantText.replace('{name}', userName.current);
-      // Small delay to simulate typing
       setTimeout(() => {
         addAssistantMessage(assistantText);
         setCurrentStep(nextStepIndex);
+        currentStepRef.current = nextStepIndex;
         setInputValue('');
+        isProcessingRef.current = false;
         if (nextStep.type === 'text') {
           setTimeout(() => inputRef.current?.focus(), 300);
         }
       }, 400);
     } else {
-      // All questions answered — finalize onboarding
       const finalText = FINAL_ASSISTANT_TEXT(userName.current);
       setTimeout(() => {
         addAssistantMessage(finalText);
         setCurrentStep(nextStepIndex);
+        currentStepRef.current = nextStepIndex;
         completeOnboarding();
       }, 400);
     }
@@ -250,6 +256,11 @@ export default function OnboardingScreen() {
     } catch (error) {
       console.error('[onboarding] Error completing onboarding:', error);
       Alert.alert('Error', 'Failed to save your profile. Please try again.');
+      // Roll back step so user can retry
+      const prevStep = ONBOARDING_STEPS.length - 1;
+      setCurrentStep(prevStep);
+      currentStepRef.current = prevStep;
+      isProcessingRef.current = false;
       setIsSaving(false);
     }
   };
@@ -257,7 +268,7 @@ export default function OnboardingScreen() {
   const currentQuestion = currentStep < ONBOARDING_STEPS.length ? ONBOARDING_STEPS[currentStep] : null;
   const showTextInput = currentQuestion?.type === 'text' && !isSaving;
   const showOptions = currentQuestion?.type === 'options' && !isSaving;
-  const isInputDisabled = isSaving;
+  const canSend = showTextInput && inputValue.trim().length > 0;
 
   return (
     <View style={styles.container}>
@@ -320,7 +331,9 @@ export default function OnboardingScreen() {
         {/* Bottom input bar */}
         <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
           <View style={styles.inputBarInner}>
-            <View style={styles.plusButton} />
+            <View style={styles.plusButton}>
+              <Plus size={16} color={Colors.gray400} strokeWidth={2} />
+            </View>
             <TextInput
               ref={inputRef}
               style={styles.textInput}
@@ -331,32 +344,25 @@ export default function OnboardingScreen() {
               editable={showTextInput}
               autoCapitalize="words"
               autoCorrect={false}
-              onSubmitEditing={handleSendText}
+              onSubmitEditing={Platform.OS === 'web' ? undefined : handleSendText}
               returnKeyType="send"
+              blurOnSubmit={false}
             />
             <TouchableOpacity
               style={[
                 styles.sendButton,
-                (showTextInput && inputValue.trim().length > 0) ? styles.sendButtonActive : styles.sendButtonInactive,
+                canSend ? styles.sendButtonActive : styles.sendButtonInactive,
               ]}
               onPress={handleSendText}
-              disabled={!showTextInput || inputValue.trim().length === 0}
+              disabled={!canSend}
               activeOpacity={0.7}
             >
-              <SendIcon color={(showTextInput && inputValue.trim().length > 0) ? Colors.white : Colors.gray400} />
+              <Send size={18} color={canSend ? Colors.white : Colors.gray400} strokeWidth={2} />
             </TouchableOpacity>
           </View>
         </View>
       </KeyboardAvoidingView>
     </View>
-  );
-}
-
-// ─── Send Icon (inline SVG-like component) ──────────────────────────────────
-
-function SendIcon({ color }: { color: string }) {
-  return (
-    <View style={[styles.sendIcon, { borderTopColor: color, borderRightColor: color, borderBottomColor: color }]} />
   );
 }
 
@@ -489,6 +495,8 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: Colors.gray300,
     marginRight: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   textInput: {
     flex: 1,
@@ -511,15 +519,5 @@ const styles = StyleSheet.create({
   },
   sendButtonInactive: {
     backgroundColor: Colors.creamMedium,
-  },
-  // Send icon (triangle shape)
-  sendIcon: {
-    width: 0,
-    height: 0,
-    borderLeftWidth: 0,
-    borderTopWidth: 7,
-    borderRightWidth: 10,
-    borderBottomWidth: 7,
-    borderLeftColor: 'transparent',
   },
 });
