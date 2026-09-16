@@ -4,14 +4,14 @@ import * as SplashScreen from "expo-splash-screen";
 import React, { useCallback, useEffect, useRef } from "react";
 import { AppState, AppStateStatus, Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { ConvexProvider, ConvexReactClient , useMutation } from "convex/react";
+import { ConvexProvider, useMutation } from "convex/react";
 import { AppProvider, useApp } from "@/contexts/AppContext";
+import convex from '@/lib/convex';
 import { PaywallProvider } from "@/contexts/PaywallContext";
 import * as Font from 'expo-font';
 import * as Notifications from 'expo-notifications';
 import { registerForPushNotificationsAsync } from "@/lib/videoPollingService";
 import { api } from "@/convex/_generated/api";
-import Constants from 'expo-constants';
 import Colors from "@/constants/colors";
 import IPhoneFrameWrapper from "@/components/IPhoneFrameWrapper";
 
@@ -75,25 +75,6 @@ Notifications.setNotificationHandler({
 });
 
 const queryClient = new QueryClient();
-
-// Initialize Convex client
-// Try multiple sources for the Convex URL
-const convexUrl = 
-  process.env.EXPO_PUBLIC_CONVEX_URL || 
-  Constants.expoConfig?.extra?.convexUrl ||
-  'https://quick-echidna-290.convex.cloud';
-
-console.log('[App] Initializing Convex client...');
-console.log('[App] process.env.EXPO_PUBLIC_CONVEX_URL:', process.env.EXPO_PUBLIC_CONVEX_URL);
-console.log('[App] Constants.expoConfig.extra.convexUrl:', Constants.expoConfig?.extra?.convexUrl);
-console.log('[App] Final Convex URL:', convexUrl);
-
-if (!process.env.EXPO_PUBLIC_CONVEX_URL) {
-  console.warn('[App] EXPO_PUBLIC_CONVEX_URL is not set in process.env. Using fallback.');
-}
-
-const convex = new ConvexReactClient(convexUrl);
-console.log('[App] Convex client created with URL:', convexUrl);
 
 function AppContent() {
   const { userId, jwt, clearJwt, isAuthReady } = useApp();
