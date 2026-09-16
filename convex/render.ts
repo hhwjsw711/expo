@@ -432,19 +432,42 @@ export const createSequence = action({
     } catch (error) {
       console.error("[sequence] error:", error);
 
-      if (sandbox) {
+      const errMsg = error instanceof Error ? error.message : "sequence creation failed";
+      // For transient errors (network, download, timeout), keep the sandbox
+      // alive and don't mark as "failed" so the user can retry. Only kill the
+      // sandbox and mark failed for permanent errors (sandbox creation failure,
+      // claude/generate-composition explicitly failed).
+      const isTransient = errMsg.includes("timed out")
+        || errMsg.includes("timeout")
+        || errMsg.includes("ETIMEDOUT")
+        || errMsg.includes("ECONNRESET")
+        || errMsg.includes("ECONNREFUSED")
+        || errMsg.includes("download")
+        || errMsg.includes("fetch")
+        || errMsg.includes("network");
+
+      if (sandbox && !isTransient) {
         try { await sandbox.kill(); } catch (e) { console.log("[sequence] kill failed:", e); }
       }
 
-      await ctx.runMutation(api.tasks.updateProjectWithRenderResult, {
-        id: projectId,
-        error: error instanceof Error ? error.message : "sequence creation failed",
-        status: "failed",
-      });
+      if (isTransient) {
+        console.log("[sequence] transient error, keeping sandbox alive for retry");
+        await ctx.runMutation(api.tasks.updateRenderProgress, {
+          id: projectId,
+          step: "retry available",
+          details: `transient error: ${errMsg.substring(0, 200)}`,
+        });
+      } else {
+        await ctx.runMutation(api.tasks.updateProjectWithRenderResult, {
+          id: projectId,
+          error: errMsg,
+          status: "failed",
+        });
+      }
 
       return {
         success: false,
-        error: error instanceof Error ? error.message : "sequence creation failed",
+        error: errMsg,
       };
     }
   },
@@ -501,17 +524,18 @@ export const renderFinalVideo = action({
 
       // Check if video already exists (recovery from previous timeout)
       const existingCheck = await sb.commands.run(`test -f "${videoPath}" && echo exists || echo missing`);
+      let existingSize = 0;
       if (existingCheck.stdout.trim() === "exists") {
         const sizeResult = await sb.commands.run(
           `stat -f%z "${videoPath}" 2>/dev/null || stat -c%s "${videoPath}" 2>/dev/null`
         );
-        const existingSize = parseInt(sizeResult.stdout.trim() || "0");
+        existingSize = parseInt(sizeResult.stdout.trim() || "0");
         if (existingSize > 1000) {
           console.log("[render-final] found existing render from previous attempt, size:", existingSize);
         }
       }
 
-      if (existingCheck.stdout.trim() !== "exists" || parseInt((await sb.commands.run(`stat -c%s "${videoPath}" 2>/dev/null || stat -f%z "${videoPath}" 2>/dev/null`)).stdout.trim() || "0") < 1000) {
+      if (existingCheck.stdout.trim() !== "exists" || existingSize < 1000) {
         console.log("[render-final] rendering:", compositionId);
         await ctx.runMutation(api.tasks.updateRenderProgress, {
           id: projectId,
@@ -546,19 +570,45 @@ export const renderFinalVideo = action({
     } catch (error) {
       console.error("[render-final] error:", error);
 
-      if (sandbox) {
+      const errMsg = error instanceof Error ? error.message : "render failed";
+      // Distinguish transient errors (timeout, network, download) from
+      // permanent failures (remotion render explicitly failed). For transient
+      // errors, keep the sandbox alive so a retry can recover the already-
+      // rendered video (the recovery check above will find it). Only kill
+      // the sandbox for explicit render failures.
+      const isTransient = errMsg.includes("timed out")
+        || errMsg.includes("timeout")
+        || errMsg.includes("ETIMEDOUT")
+        || errMsg.includes("ECONNRESET")
+        || errMsg.includes("ECONNREFUSED")
+        || errMsg.includes("download")
+        || errMsg.includes("fetch")
+        || errMsg.includes("network");
+
+      if (sandbox && !isTransient) {
         try { await sandbox.kill(); } catch (e) { console.log("[render-final] kill failed:", e); }
       }
 
-      await ctx.runMutation(api.tasks.updateProjectWithRenderResult, {
-        id: projectId,
-        error: error instanceof Error ? error.message : "render failed",
-        status: "failed",
-      });
+      if (isTransient) {
+        // Keep status as "rendering" so the user can retry and recover.
+        // Do NOT mark as "failed" — the video may already be rendered in the sandbox.
+        console.log("[render-final] transient error, keeping sandbox alive for retry");
+        await ctx.runMutation(api.tasks.updateRenderProgress, {
+          id: projectId,
+          step: "retry available",
+          details: `transient error: ${errMsg.substring(0, 200)}`,
+        });
+      } else {
+        await ctx.runMutation(api.tasks.updateProjectWithRenderResult, {
+          id: projectId,
+          error: errMsg,
+          status: "failed",
+        });
+      }
 
       return {
         success: false,
-        error: error instanceof Error ? error.message : "render failed",
+        error: errMsg,
       };
     }
   },
