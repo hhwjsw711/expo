@@ -285,8 +285,13 @@ export const createSequence = action({
     sandboxId?: string;
     error?: string;
   }> => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     console.log("[sequence] starting for project:", projectId);
+
+    // Verify project ownership
+    const projectCheck = await ctx.runQuery(api.tasks.getProject, { id: projectId });
+    if (!projectCheck) throw new Error("project not found");
+    if (projectCheck.userId !== authUserId) throw new Error("Forbidden: not project owner");
 
     // Acquire render lock to prevent duplicate renders
     const lockResult: { success: boolean; error?: string } = await ctx.runMutation(
@@ -493,8 +498,13 @@ export const renderFinalVideo = action({
     renderedVideoUrl?: string;
     error?: string;
   }> => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     console.log("[render-final] starting for project:", projectId);
+
+    // Verify project ownership
+    const projectCheck = await ctx.runQuery(api.tasks.getProject, { id: projectId });
+    if (!projectCheck) throw new Error("project not found");
+    if (projectCheck.userId !== authUserId) throw new Error("Forbidden: not project owner");
 
     let sandbox: Sandbox | undefined;
 

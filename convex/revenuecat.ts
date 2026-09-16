@@ -23,13 +23,14 @@ const CREDIT_PRODUCT_MAP: Record<string, number> = {
 export const bindRevenueCatUser = mutation({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
-    const user = await ctx.db.get(args.userId);
+    const authUserId = await requireAuth(ctx);
+    // Use the authenticated user's ID, not the client-supplied one
+    const user = await ctx.db.get(authUserId as any);
     if (!user) {
       throw new Error("user not found");
     }
-    await ctx.db.patch(args.userId, {
-      revenuecatAppUserId: args.userId,
+    await ctx.db.patch(authUserId as any, {
+      revenuecatAppUserId: authUserId,
     });
     return { success: true };
   },

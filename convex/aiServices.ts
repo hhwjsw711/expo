@@ -744,10 +744,11 @@ export const generateChatScript = action({
     saveAndNotify: v.boolean(),
   },
   handler: async (ctx, args): Promise<{ success: boolean; script?: string; error?: string }> => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     try {
       const project = await ctx.runQuery(api.tasks.getProject, { id: args.projectId });
       if (!project) throw new Error("project not found");
+      if (project.userId !== authUserId) throw new Error("Forbidden: not project owner");
 
       let style = "professional";
       if (project.userId) {
@@ -811,7 +812,7 @@ export const generateScriptPreviewAudio = action({
     userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args): Promise<{ success: boolean; audioUrl?: string; error?: string }> => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     try {
       const apiKey = process.env.MINIMAX_API_KEY;
       if (!apiKey) {
@@ -821,11 +822,10 @@ export const generateScriptPreviewAudio = action({
 
       // If user has a custom voice, use it
       let voiceId: string = "English_Trustworthy_Man";
-      if (args.userId) {
-        const user = await ctx.runQuery(api.users.getCurrentUser, { userId: args.userId });
-        if (user?.selectedVoiceId) voiceId = user.selectedVoiceId;
-        else if (user?.elevenlabsVoiceId) voiceId = user.elevenlabsVoiceId;
-      }
+      // Always use the authenticated user's voice preferences
+      const user = await ctx.runQuery(api.users.getCurrentUser, { userId: authUserId as any });
+      if (user?.selectedVoiceId) voiceId = user.selectedVoiceId;
+      else if (user?.elevenlabsVoiceId) voiceId = user.elevenlabsVoiceId;
 
       const response = await fetch("https://api.minimaxi.com/v1/t2a_v2", {
         method: "POST",

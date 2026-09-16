@@ -190,13 +190,16 @@ export const testAccountLogin = mutation({
 });
 
 // ─── Get Current User ───────────────────────────────────────────────────────
+// userId arg is kept for frontend "skip" gating only; the actual user
+// is always resolved from the auth token.
 export const getCurrentUser = query({
   args: { userId: v.optional(v.id("users")) },
   handler: async (ctx, args) => {
     if (!args.userId) {
       return null;
     }
-    return await ctx.db.get(args.userId);
+    const authUserId = await requireAuth(ctx);
+    return await ctx.db.get(authUserId as Id<"users">);
   },
 });
 
@@ -226,6 +229,7 @@ export const getVoicePreviewUrl = query({
 });
 
 // ─── Get Video Generation Status (subscription + credits) ───────────────────
+// userId arg kept for "skip" gating; actual user resolved from auth token.
 export const getVideoGenerationStatus = query({
   args: { userId: v.optional(v.id("users")) },
   handler: async (ctx, args) => {
@@ -241,7 +245,8 @@ export const getVideoGenerationStatus = query({
       };
     }
 
-    const user = await ctx.db.get(args.userId);
+    const authUserId = await requireAuth(ctx);
+    const user = await ctx.db.get(authUserId as Id<"users">);
     if (!user) {
       return {
         isPremium: false,
@@ -257,7 +262,7 @@ export const getVideoGenerationStatus = query({
     // Count user's completed/rendering projects
     const projects = await ctx.db
       .query("projects")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user", (q) => q.eq("userId", authUserId as Id<"users">))
       .collect();
 
     const generatedCount = projects.filter(
@@ -290,8 +295,8 @@ export const updatePushToken = mutation({
     pushToken: v.string(),
   },
   handler: async (ctx, args) => {
-    const userId = await requireAuth(ctx);
-    await ctx.db.patch(userId as Id<"users">, {
+    const authUserId = await requireAuth(ctx);
+    await ctx.db.patch(authUserId as Id<"users">, {
       pushToken: args.pushToken,
     });
     return { success: true };
@@ -311,7 +316,7 @@ export const completeOnboarding = action({
     voiceRecordingStorageId: v.optional(v.id("_storage")),
   },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     let voiceRecordingUrl: string | undefined;
     let voiceId: string | undefined;
     let voicePreviewStorageId: Id<"_storage"> | undefined;
@@ -339,7 +344,7 @@ export const completeOnboarding = action({
     }
 
     await ctx.runMutation(internal.users.internalCompleteOnboarding, {
-      userId: args.userId,
+      userId: authUserId as Id<"users">,
       name: args.name,
       preferredStyle: args.preferredStyle,
       voiceRecordingStorageId: args.voiceRecordingStorageId,
@@ -404,7 +409,7 @@ export const updateProfile = action({
     voiceRecordingStorageId: v.optional(v.id("_storage")),
   },
   handler: async (ctx, args): Promise<{ success: boolean; error?: string }> => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     const updates: any = {};
     if (args.name !== undefined) updates.name = args.name;
     if (args.preferredStyle !== undefined) updates.preferredStyle = args.preferredStyle;
@@ -416,7 +421,7 @@ export const updateProfile = action({
     }
 
     await ctx.runMutation(internal.users.internalUpdateProfile, {
-      userId: args.userId,
+      userId: authUserId as Id<"users">,
       updates,
     });
 
@@ -454,8 +459,8 @@ export const updateSelectedVoice = mutation({
     voiceId: v.string(),
   },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
-    await ctx.db.patch(args.userId, {
+    const authUserId = await requireAuth(ctx);
+    await ctx.db.patch(authUserId as Id<"users">, {
       selectedVoiceId: args.voiceId,
     });
   },
@@ -465,7 +470,11 @@ export const updateSelectedVoice = mutation({
 export const deleteAccount = action({
   args: { userId: v.id("users") },
   handler: async (ctx, args): Promise<{ success: boolean; error?: string }> => {
-    await requireAuth(ctx);
+    // Verify the caller is who they claim to be.
+    const authUserId = await requireAuth(ctx);
+    if (authUserId !== args.userId) {
+      throw new Error("Forbidden: cannot delete another user's account");
+    }
     // Delete user's projects
     const projects = await ctx.runQuery(api.tasks.getProjects, { userId: args.userId });
     for (const project of projects) {
@@ -500,7 +509,7 @@ export const redeemPromoCode = mutation({
     code: v.string(),
   },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     let promoCodes: Record<string, number> = {};
     if (process.env.PROMO_CODES) {
       try {
@@ -516,9 +525,9 @@ export const redeemPromoCode = mutation({
       return { success: false, error: "Invalid promo code" };
     }
 
-    const user = await ctx.db.get(args.userId);
+    const user = await ctx.db.get(authUserId as Id<"users">);
     const current = user?.purchasedCredits || 0;
-    await ctx.db.patch(args.userId, {
+    await ctx.db.patch(authUserId as Id<"users">, {
       purchasedCredits: current + credits,
       isPremium: true,
     });
@@ -530,8 +539,8 @@ export const redeemPromoCode = mutation({
 export const completeChatTips = mutation({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
-    await ctx.db.patch(args.userId, { chatTipsCompleted: true });
+    const authUserId = await requireAuth(ctx);
+    await ctx.db.patch(authUserId as Id<"users">, { chatTipsCompleted: true });
     return { success: true };
   },
 });
@@ -540,8 +549,8 @@ export const completeChatTips = mutation({
 export const completeVideoPreviewTips = mutation({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
-    await ctx.db.patch(args.userId, { videoPreviewTipsCompleted: true });
+    const authUserId = await requireAuth(ctx);
+    await ctx.db.patch(authUserId as Id<"users">, { videoPreviewTipsCompleted: true });
     return { success: true };
   },
 });

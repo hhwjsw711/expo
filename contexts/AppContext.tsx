@@ -16,6 +16,7 @@ export const [AppProvider, useApp] = createContextHook(() => {
   const [isLoading, setIsLoading] = useState(true);
   const [syncedFromBackend, setSyncedFromBackend] = useState(false);
   const [jwt, setJwt] = useState<string | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const [backendUser, setBackendUser] = useState<any>(null);
   const [recentlyDeletedIds, setRecentlyDeletedIds] = useState<Set<string>>(new Set());
 
@@ -66,6 +67,10 @@ export const [AppProvider, useApp] = createContextHook(() => {
         // 恢复 auth，让后续请求带 token（setAuth 期望 fetcher）
         convex.setAuth(() => Promise.resolve(jwtData));
       }
+      // Mark auth as ready regardless of whether JWT was found —
+      // pages need to know that the async restore attempt has completed
+      // so they can proceed or redirect to login.
+      setIsAuthReady(true);
     } catch (error) {
       console.error('Error loading data:', error);
     } finally {
@@ -332,6 +337,7 @@ export const [AppProvider, useApp] = createContextHook(() => {
       await AsyncStorage.setItem(JWT_KEY, token);
       setJwt(token);
       convex.setAuth(() => Promise.resolve(token));
+      setIsAuthReady(true);
     } catch (error) {
       console.error('Error saving jwt:', error);
     }
@@ -342,6 +348,7 @@ export const [AppProvider, useApp] = createContextHook(() => {
       await AsyncStorage.removeItem(JWT_KEY);
       setJwt(null);
       convex.clearAuth();
+      setIsAuthReady(true);
     } catch (error) {
       console.error('Error clearing jwt:', error);
     }
@@ -365,6 +372,7 @@ export const [AppProvider, useApp] = createContextHook(() => {
     user,
     userId,
     jwt,
+    isAuthReady,
     videos,
     isLoading,
     syncedFromBackend,
@@ -379,5 +387,5 @@ export const [AppProvider, useApp] = createContextHook(() => {
     clearData,
     syncVideosFromBackend,
     syncUserFromBackend,
-  }), [user, userId, jwt, videos, isLoading, syncedFromBackend, backendUser, saveUser, saveUserId, saveJwt, clearJwt, addVideo, updateVideoStatus, deleteVideo, clearData, syncVideosFromBackend, syncUserFromBackend]);
+  }), [user, userId, jwt, isAuthReady, videos, isLoading, syncedFromBackend, backendUser, saveUser, saveUserId, saveJwt, clearJwt, addVideo, updateVideoStatus, deleteVideo, clearData, syncVideosFromBackend, syncUserFromBackend]);
 });

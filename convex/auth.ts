@@ -1,5 +1,6 @@
 import { SignJWT, importPKCS8 } from "jose";
 import type { MutationCtx, QueryCtx, ActionCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 
 // ─── JWT constants ───────────────────────────────────────────────────────────
 // applicationID must match `aud` claim; issuer must match `iss` claim.
@@ -62,3 +63,30 @@ export async function requireAuth(
   }
   return userId;
 }
+
+// ─── requireProjectOwnership helper ──────────────────────────────────────────
+// For mutations and queries (ctx.db.get available).
+// Authenticates the caller, fetches the project, and verifies ownership.
+// Returns { userId, project } on success, throws on failure.
+//
+// Usage:
+//   const { userId, project } = await requireProjectOwnership(ctx, args.projectId);
+export async function requireProjectOwnership(
+  ctx: MutationCtx | QueryCtx,
+  projectId: Id<"projects">
+): Promise<{ userId: string; project: any }> {
+  const userId = await requireAuth(ctx);
+  const project = await ctx.db.get(projectId);
+  if (!project) {
+    throw new Error("Project not found");
+  }
+  if (project.userId !== userId) {
+    throw new Error("Forbidden: not project owner");
+  }
+  return { userId, project };
+}
+
+// ─── Auth error sentinel ─────────────────────────────────────────────────────
+// Frontend can check `err.message === AUTH_ERROR_SENTINEL` to distinguish
+// auth errors from other server errors and redirect to login.
+export const AUTH_ERROR_SENTINEL = "Unauthorized";

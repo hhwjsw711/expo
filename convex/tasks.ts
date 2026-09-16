@@ -3,7 +3,7 @@ import { v } from "convex/values";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { prompts } from "./prompts";
-import { requireAuth } from "./auth";
+import { requireAuth, requireProjectOwnership } from "./auth";
 
 const isImageUrl = (url: string): boolean => {
   const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
@@ -33,10 +33,10 @@ export const createProject = mutation({
     }))),
     thumbnail: v.optional(v.id("_storage")),
   },
-  handler: async (ctx, { userId, prompt, files, fileMetadata, thumbnail }) => {
-    await requireAuth(ctx);
+  handler: async (ctx, { userId: _userId, prompt, files, fileMetadata, thumbnail }) => {
+    const authUserId = await requireAuth(ctx);
     return await ctx.db.insert("projects", {
-      userId,
+      userId: authUserId as Id<"users">,
       prompt,
       files,
       fileMetadata,
@@ -61,9 +61,9 @@ export const createChatProject = mutation({
     thumbnail: v.optional(v.id("_storage")),
   },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     const projectId = await ctx.db.insert("projects", {
-      userId: args.userId,
+      userId: authUserId as Id<"users">,
       prompt: "",
       files: args.files,
       fileMetadata: args.fileMetadata,
@@ -90,7 +90,7 @@ export const addFilesToProject = mutation({
     })),
   },
   handler: async (ctx, { projectId, files, fileMetadata }) => {
-    await requireAuth(ctx);
+    await requireProjectOwnership(ctx, projectId);
     const project = await ctx.db.get(projectId);
     if (!project) throw new Error("project not found");
 
@@ -116,7 +116,8 @@ export const addChatMessage = mutation({
     mediaIds: v.optional(v.array(v.id("_storage"))),
   },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    await requireProjectOwnership(ctx, args.projectId);
+
     const messageId = await ctx.db.insert("chatMessages", {
       projectId: args.projectId,
       role: args.role,
@@ -141,37 +142,6 @@ export const addChatMessage = mutation({
   },
 });
 
-// ─── Update Chat Message ────────────────────────────────────────────────────
-export const updateChatMessage = mutation({
-  args: {
-    messageId: v.id("chatMessages"),
-    content: v.string(),
-  },
-  handler: async (ctx, args) => {
-    await requireAuth(ctx);
-    await ctx.db.patch(args.messageId, {
-      content: args.content,
-      isEdited: true,
-    });
-    return { success: true };
-  },
-});
-
-// ─── Update Chat Project Prompt ─────────────────────────────────────────────
-export const updateChatProjectPrompt = mutation({
-  args: {
-    projectId: v.id("projects"),
-    prompt: v.string(),
-  },
-  handler: async (ctx, args) => {
-    await requireAuth(ctx);
-    await ctx.db.patch(args.projectId, {
-      prompt: args.prompt,
-    });
-    return { success: true };
-  },
-});
-
 // ─── Fork Chat Project ──────────────────────────────────────────────────────
 export const forkChatProject = mutation({
   args: {
@@ -179,12 +149,12 @@ export const forkChatProject = mutation({
     userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    const { userId: authUserId } = await requireProjectOwnership(ctx, args.sourceProjectId);
     const original = await ctx.db.get(args.sourceProjectId);
     if (!original) throw new Error("project not found");
 
     const newProjectId = await ctx.db.insert("projects", {
-      userId: args.userId || original.userId,
+      userId: authUserId as Id<"users">,
       prompt: original.prompt,
       files: original.files,
       fileMetadata: original.fileMetadata,
@@ -216,11 +186,42 @@ export const forkChatProject = mutation({
   },
 });
 
+// ─── Update Chat Message ────────────────────────────────────────────────────
+export const updateChatMessage = mutation({
+  args: {
+    messageId: v.id("chatMessages"),
+    content: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await requireAuth(ctx);
+    await ctx.db.patch(args.messageId, {
+      content: args.content,
+      isEdited: true,
+    });
+    return { success: true };
+  },
+});
+
+// ─── Update Chat Project Prompt ─────────────────────────────────────────────
+export const updateChatProjectPrompt = mutation({
+  args: {
+    projectId: v.id("projects"),
+    prompt: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await requireProjectOwnership(ctx, args.projectId);
+    await ctx.db.patch(args.projectId, {
+      prompt: args.prompt,
+    });
+    return { success: true };
+  },
+});
+
 // ─── Get Chat Messages ──────────────────────────────────────────────────────
 export const getChatMessages = query({
   args: { projectId: v.id("projects") },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    await requireProjectOwnership(ctx, args.projectId);
     const messages = await ctx.db
       .query("chatMessages")
       .withIndex("by_project", (q) => q.eq("projectId", args.projectId))
@@ -250,14 +251,12 @@ export const getProjects = query({
     userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
-    const projects = args.userId
-      ? await ctx.db
-          .query("projects")
-          .withIndex("by_user", (q) => q.eq("userId", args.userId))
-          .order("desc")
-          .collect()
-      : await ctx.db.query("projects").order("desc").collect();
+    const authUserId = await requireAuth(ctx);
+    const projects = await ctx.db
+      .query("projects")
+      .withIndex("by_user", (q) => q.eq("userId", authUserId as Id<"users">))
+      .order("desc")
+      .collect();
 
     return Promise.all(
       projects.map(async (project) => ({
@@ -308,7 +307,7 @@ export const deleteProject = mutation({
     id: v.id("projects"),
   },
   handler: async (ctx, { id }) => {
-    await requireAuth(ctx);
+    await requireProjectOwnership(ctx, id);
     // Delete associated chat messages
     const messages = await ctx.db
       .query("chatMessages")
@@ -330,7 +329,7 @@ export const updateProjectScript = mutation({
     script: v.string(),
   },
   handler: async (ctx, { id, script }) => {
-    await requireAuth(ctx);
+    await requireProjectOwnership(ctx, id);
     await ctx.db.patch(id, { script });
     return { id, script };
   },
@@ -342,7 +341,7 @@ export const markProjectSubmitted = mutation({
     id: v.id("projects"),
   },
   handler: async (ctx, { id }) => {
-    await requireAuth(ctx);
+    await requireProjectOwnership(ctx, id);
     const project = await ctx.db.get(id);
     if (!project) throw new Error("project not found");
 
@@ -395,7 +394,7 @@ export const markProjectSubmittedTestMode = mutation({
     id: v.id("projects"),
   },
   handler: async (ctx, { id }) => {
-    await requireAuth(ctx);
+    await requireProjectOwnership(ctx, id);
     await ctx.db.patch(id, {
       submittedAt: Date.now(),
       status: "processing",
@@ -411,10 +410,11 @@ export const regenerateScript = action({
     projectId: v.id("projects"),
   },
   handler: async (ctx, { projectId }): Promise<{ success: boolean; script?: string; error?: string }> => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     try {
       const project = await ctx.runQuery(api.tasks.getProject, { id: projectId });
       if (!project) throw new Error("project not found");
+      if (project.userId !== authUserId) throw new Error("Forbidden: not project owner");
 
       let style = "professional";
       if (project.userId) {
@@ -602,7 +602,7 @@ export const updateProjectVoiceSpeed = mutation({
     voiceSpeed: v.number(),
   },
   handler: async (ctx, { id, voiceSpeed }) => {
-    await requireAuth(ctx);
+    await requireProjectOwnership(ctx, id);
     await ctx.db.patch(id, { voiceSpeed });
     return { id };
   },
@@ -615,7 +615,7 @@ export const updateProjectKeepOrder = mutation({
     keepOrder: v.boolean(),
   },
   handler: async (ctx, { id, keepOrder }) => {
-    await requireAuth(ctx);
+    await requireProjectOwnership(ctx, id);
     await ctx.db.patch(id, { keepOrder });
     return { id };
   },
@@ -628,7 +628,7 @@ export const updateProjectRenderMode = mutation({
     renderMode: v.string(),
   },
   handler: async (ctx, { id, renderMode }) => {
-    await requireAuth(ctx);
+    await requireProjectOwnership(ctx, id);
     await ctx.db.patch(id, { renderMode });
     return { id };
   },
@@ -648,7 +648,7 @@ export const updateProjectAudioSettings = mutation({
     keepOrder: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    await requireProjectOwnership(ctx, args.id);
     const updates: any = {};
     if (args.voiceVolume !== undefined) updates.voiceVolume = args.voiceVolume;
     if (args.musicVolume !== undefined) updates.musicVolume = args.musicVolume;
@@ -669,7 +669,7 @@ export const regenerateProjectEditing = mutation({
     sourceProjectId: v.id("projects"),
   },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    await requireProjectOwnership(ctx, args.sourceProjectId);
     const original = await ctx.db.get(args.sourceProjectId);
     if (!original) throw new Error("project not found");
 
@@ -696,7 +696,10 @@ export const refreshProjectR2Urls = action({
     projectId: v.id("projects"),
   },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
+    const project = await ctx.runQuery(api.tasks.getProject, { id: args.projectId });
+    if (!project) throw new Error("Project not found");
+    if (project.userId !== authUserId) throw new Error("Forbidden: not project owner");
     // In minimal backend, just return success
     // Full implementation would refresh expired R2 URLs
     return { success: true };
@@ -757,9 +760,10 @@ export const getFreshProjectVideoUrl = action({
     projectId: v.id("projects"),
   },
   handler: async (ctx, args): Promise<string | null> => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     const project = await ctx.runQuery(api.tasks.getProject, { id: args.projectId });
     if (!project) return null;
+    if (project.userId !== authUserId) throw new Error("Forbidden: not project owner");
     return project.renderedVideoUrl || null;
   },
 });
@@ -773,11 +777,12 @@ export const getVideoVariant = action({
     includeCaptions: v.boolean(),
   },
   handler: async (ctx, args): Promise<{ success: boolean; url?: string; cached?: boolean; error?: string }> => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     const project = await ctx.runQuery(api.tasks.getProject, { id: args.projectId });
     if (!project || !project.renderedVideoUrl) {
       return { success: false, error: "No video available" };
     }
+    if (project.userId !== authUserId) throw new Error("Forbidden: not project owner");
     // Minimal: return the rendered video URL
     return {
       success: true,
@@ -793,7 +798,7 @@ export const getProjectPreviewAssets = action({
     projectId: v.id("projects"),
   },
   handler: async (ctx, args): Promise<{ success: boolean; baseVideoUrl: string | null; voiceAudioUrl: string | null; musicAudioUrl: string | null; watermarkUrl: string | null; voiceSpeed: number; voiceVolume: number; musicVolume: number; originalSoundVolume: number; includeVoice: boolean; includeMusic: boolean; includeCaptions: boolean; includeOriginalSound: boolean; error?: string }> => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     const project = await ctx.runQuery(api.tasks.getProject, { id: args.projectId });
     if (!project) {
       return {
@@ -813,6 +818,7 @@ export const getProjectPreviewAssets = action({
         error: "Project not found",
       };
     }
+    if (project.userId !== authUserId) throw new Error("Forbidden: not project owner");
 
     return {
       success: true,
@@ -838,11 +844,12 @@ export const getProjectEditorData = action({
     projectId: v.id("projects"),
   },
   handler: async (ctx, args): Promise<{ success: boolean; clipUrls?: Record<string, string>; videoUrls?: string[]; fileUrls?: string[]; fileMetadata?: any[]; musicVolume?: number; baseVideoUrl?: string | null; renderedVideoUrl?: string | null; timeline?: any; duration?: number; voiceAudioUrl?: string | null; musicAudioUrl?: string | null; assContent?: string; srtContent?: string; voiceSpeed?: number; voiceVolume?: number; originalSoundVolume?: number; includeVoice?: boolean; includeMusic?: boolean; includeCaptions?: boolean; includeOriginalSound?: boolean; error?: string }> => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     const project = await ctx.runQuery(api.tasks.getProject, { id: args.projectId });
     if (!project) {
       return { success: false, error: "Project not found" };
     }
+    if (project.userId !== authUserId) throw new Error("Forbidden: not project owner");
 
     // Build clipUrls: map storageId → file URL for each file
     const clipUrls: Record<string, string> = {};
@@ -901,7 +908,7 @@ export const saveEditorChanges = mutation({
     assContent: v.optional(v.string()),
   },
   handler: async (ctx, { projectId, timelineJson, assContent }): Promise<{ success: boolean; newProjectId?: Id<"projects">; error?: string }> => {
-    await requireAuth(ctx);
+    await requireProjectOwnership(ctx, projectId);
     try {
       const original = await ctx.db.get(projectId);
       if (!original) throw new Error("project not found");
@@ -956,10 +963,11 @@ export const generateScriptOnly = action({
     projectId: v.id("projects"),
   },
   handler: async (ctx, { projectId }): Promise<{ success: boolean; script?: string; error?: string }> => {
-    await requireAuth(ctx);
+    const authUserId = await requireAuth(ctx);
     try {
       const project = await ctx.runQuery(api.tasks.getProject, { id: projectId });
       if (!project) throw new Error("project not found");
+      if (project.userId !== authUserId) throw new Error("Forbidden: not project owner");
 
       let style = "professional";
       if (project.userId) {

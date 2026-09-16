@@ -96,7 +96,7 @@ const convex = new ConvexReactClient(convexUrl);
 console.log('[App] Convex client created with URL:', convexUrl);
 
 function AppContent() {
-  const { userId } = useApp();
+  const { userId, jwt, clearJwt, isAuthReady } = useApp();
   const updatePushToken = useMutation(api.users.updatePushToken);
   const notificationListener = useRef<Notifications.EventSubscription | null>(null);
   const responseListener = useRef<Notifications.EventSubscription | null>(null);
@@ -104,6 +104,18 @@ function AppContent() {
   const pathname = usePathname();
   const globalParams = useGlobalSearchParams<{ projectId?: string | string[] }>();
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+
+  // Global auth error guard: when there's no JWT and the user is not on auth,
+  // redirect to auth once isAuthReady is true.
+  // This catches the "silent loading" scenario where requireAuth throws but
+  // queries return undefined without any UI feedback.
+  useEffect(() => {
+    if (!isAuthReady) return;
+    if (!jwt && pathname !== '/auth' && pathname !== '/index') {
+      console.log('[App] No JWT after auth ready, redirecting to login. Path:', pathname);
+      router.replace('/auth');
+    }
+  }, [isAuthReady, jwt, pathname]);
 
   const navigateToProjectChat = useCallback((projectId: string) => {
     const dedupeKey = `script_ready:${projectId}`;
@@ -139,7 +151,7 @@ function AppContent() {
           if (token) {
             console.log('[App] Registering push token with backend...');
             try {
-              await updatePushToken({ userId, pushToken: token });
+              await updatePushToken({ pushToken: token });
               console.log('[App] Push token registered successfully');
             } catch (error) {
               console.error('[App] Failed to register push token:', error);
