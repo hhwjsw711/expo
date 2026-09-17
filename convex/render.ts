@@ -167,6 +167,84 @@ async function cleanupDisk(sb: Sandbox): Promise<void> {
 }
 
 /**
+ * Validate a rendered video with ffprobe before uploading it.
+ * Catches broken renders (truncated, wrong resolution, missing audio)
+ * early — without this, a broken video is uploaded and the user sees a
+ * black screen or silence with no error message.
+ *
+ * Checks:
+ *  1. Duration ≈ expectedSeconds (tolerance 2s — more generous than A4's
+ *     1s recovery check, since this is the final product after any mux)
+ *  2. Video stream is 1080×1920 (portrait, as composed by generate-composition)
+ *  3. At least one audio stream exists (ensureAudioTrack already muxes if
+ *     missing, but a final confirmation catches a mux failure)
+ *
+ * Throws a "render validation failed:" error (no transient keywords →
+ * classified permanent by the catch block, so the project is marked
+ * failed rather than retrying a broken render).
+ */
+async function ffprobeValidateRender(
+  sb: Sandbox,
+  videoPath: string,
+  expectedSeconds: number
+): Promise<void> {
+  console.log("[render] ffprobe validation, expected duration:", expectedSeconds, "s");
+
+  const probe = await sb.commands.run(
+    `ffprobe -v error -show_entries format=duration:stream=width,height,codec_type ` +
+    `-of json "${videoPath}" 2>&1`,
+    { timeoutMs: 30000 }
+  );
+
+  if (probe.exitCode !== 0) {
+    throw new Error(`render validation failed: ffprobe exited ${probe.exitCode}: ${probe.stderr?.slice(0, 200)}`);
+  }
+
+  let info: any;
+  try {
+    info = JSON.parse(probe.stdout);
+  } catch {
+    throw new Error(`render validation failed: ffprobe output not JSON: ${probe.stdout.slice(0, 200)}`);
+  }
+
+  // ── Duration ──
+  const actualDuration = parseFloat(info?.format?.duration);
+  if (!Number.isFinite(actualDuration) || actualDuration <= 0) {
+    throw new Error(`render validation failed: invalid duration "${info?.format?.duration}"`);
+  }
+  if (expectedSeconds > 0 && Math.abs(actualDuration - expectedSeconds) > 2) {
+    throw new Error(
+      `render validation failed: duration ${actualDuration.toFixed(2)}s differs from expected ${expectedSeconds.toFixed(2)}s by more than 2s`
+    );
+  }
+
+  // ── Resolution ──
+  const videoStream = (info?.streams || []).find((s: any) => s.codec_type === "video");
+  if (!videoStream) {
+    throw new Error("render validation failed: no video stream found");
+  }
+  const width = Number(videoStream.width);
+  const height = Number(videoStream.height);
+  if (width !== 1080 || height !== 1920) {
+    throw new Error(
+      `render validation failed: resolution ${width}×${height} is not 1080×1920`
+    );
+  }
+
+  // ── Audio ──
+  const hasAudio = (info?.streams || []).some((s: any) => s.codec_type === "audio");
+  if (!hasAudio) {
+    throw new Error("render validation failed: no audio stream (mux may have failed)");
+  }
+
+  console.log("[render] ffprobe validation passed:", {
+    duration: actualDuration.toFixed(2) + "s",
+    resolution: `${width}×${height}`,
+    hasAudio,
+  });
+}
+
+/**
  * Download rendered video from sandbox, upload to Convex storage,
  * and update project status. Returns the video URL.
  */
@@ -174,7 +252,8 @@ async function downloadAndUploadVideo(
   ctx: any,
   sb: Sandbox,
   videoPath: string,
-  projectId: Id<"projects">
+  projectId: Id<"projects">,
+  expectedSeconds?: number
 ): Promise<string> {
   // Verify output exists
   const sizeResult = await sb.commands.run(
@@ -187,6 +266,13 @@ async function downloadAndUploadVideo(
 
   // Audio fallback: ensure video has an audio track
   await ensureAudioTrack(sb, videoPath);
+
+  // ffprobe validation: catch broken renders (wrong duration / resolution /
+  // missing audio) before uploading. A validation failure is permanent —
+  // retrying won't fix a composition-level issue.
+  if (expectedSeconds && expectedSeconds > 0) {
+    await ffprobeValidateRender(sb, videoPath, expectedSeconds);
+  }
 
   // Download from sandbox
   console.log("[render] downloading video from sandbox...");
@@ -712,7 +798,9 @@ export const renderFinalVideo = action({
       }
 
       // ── 3. Download + upload + update ──
-      const renderedVideoUrl = await downloadAndUploadVideo(ctx, sb, videoPath, projectId);
+      // expectedSeconds was parsed above (A4 recovery check) — reuse it
+      // for the post-render ffprobe validation.
+      const renderedVideoUrl = await downloadAndUploadVideo(ctx, sb, videoPath, projectId, expectedSeconds);
 
       // ── 4. Kill sandbox ──
       console.log("[render-final] killing sandbox...");
