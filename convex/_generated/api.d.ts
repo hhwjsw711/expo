@@ -11,6 +11,7 @@
 import type * as aiServices from "../aiServices.js";
 import type * as auth from "../auth.js";
 import type * as http from "../http.js";
+import type * as lib_timelinePlan from "../lib/timelinePlan.js";
 import type * as phoneAuth from "../phoneAuth.js";
 import type * as prompts from "../prompts.js";
 import type * as r2Storage from "../r2Storage.js";
@@ -30,6 +31,7 @@ declare const fullApi: ApiFromModules<{
   aiServices: typeof aiServices;
   auth: typeof auth;
   http: typeof http;
+  "lib/timelinePlan": typeof lib_timelinePlan;
   phoneAuth: typeof phoneAuth;
   prompts: typeof prompts;
   r2Storage: typeof r2Storage;
