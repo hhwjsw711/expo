@@ -369,14 +369,17 @@ export const [AppProvider, useApp] = createContextHook(() => {
         return updatedVideos;
       });
       
-      // Clear from recently deleted after delay (allows backend sync to complete)
+      // Clear from recently deleted after delay (allows backend sync to complete).
+      // R4 (M9): 5s was too short — a slow backend delete could fail and the
+      // sync would re-add the video before 5s elapsed. 30s gives the backend
+      // ample time to process the deletion before the guard expires.
       setTimeout(() => {
         setRecentlyDeletedIds(prev => {
           const next = new Set(prev);
           next.delete(videoId);
           return next;
         });
-      }, 5000);
+      }, 30000);
     } catch (error) {
       console.error('Error deleting video:', error);
     }

@@ -711,6 +711,33 @@ export const updateProjectSandbox = internalMutation({
   },
 });
 
+// ─── Try Acquire Render-Final Lock (atomic) ──────────────────────────────────
+// R4 (M7): prevents two devices/tabs from calling renderFinalVideo on the
+// same project concurrently — both would connect to the same E2B sandbox
+// and `bun remotion render` would corrupt the output file. Atomically
+// checks renderProgress.step and claims the slot in one mutation. The lock
+// auto-releases: success and failure paths both overwrite renderProgress.
+export const internalTryRenderFinalLock = internalMutation({
+  args: {
+    projectId: v.id("projects"),
+  },
+  handler: async (ctx, { projectId }): Promise<{ ok: boolean; error?: string }> => {
+    const project = await ctx.db.get(projectId);
+    if (!project) return { ok: false, error: "project not found" };
+    if (project.renderProgress?.step === "rendering video") {
+      return { ok: false, error: "render already in progress" };
+    }
+    await ctx.db.patch(projectId, {
+      renderProgress: {
+        step: "rendering video",
+        details: "starting final render",
+        timestamp: Date.now(),
+      },
+    });
+    return { ok: true };
+  },
+});
+
 // ─── Timeline Revisions (optimistic locking + audit history) ────────────────
 // Every timeline write appends a row to `timelines` and bumps
 // projects.timelineRevision. Writers pass the revision they LOADED as
@@ -944,7 +971,19 @@ export const importR2FileToConvexStorage = action({
         if (!response.ok) {
           return { success: false, error: `Failed to fetch from R2: ${response.statusText}` };
         }
+        // R4 (M1): cap the imported file at 200 MB. Without this, an
+        // authenticated user could store arbitrarily large files in Convex
+        // storage (a storage-cost / memory-exhaustion vector). 200 MB is
+        // generous for the app's short-form video/image/audio use case.
+        const contentLength = parseInt(response.headers.get("content-length") || "0", 10);
+        const MAX_IMPORT_BYTES = 200 * 1024 * 1024;
+        if (contentLength > MAX_IMPORT_BYTES) {
+          return { success: false, error: `File too large (${(contentLength / 1024 / 1024).toFixed(0)} MB, max 200 MB)` };
+        }
         const blob = await response.blob();
+        if (blob.size > MAX_IMPORT_BYTES) {
+          return { success: false, error: `File too large (${(blob.size / 1024 / 1024).toFixed(0)} MB, max 200 MB)` };
+        }
         const storageId = await ctx.storage.store(blob);
         return { storageId };
       } catch (error) {

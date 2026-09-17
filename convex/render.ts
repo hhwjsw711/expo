@@ -673,6 +673,21 @@ export const renderFinalVideo = action({
     if (!projectCheck) throw new Error("project not found");
     if (projectCheck.userId !== authUserId) throw new Error("Forbidden: not project owner");
 
+    // R4 (M7): prevent concurrent renderFinalVideo on the same project.
+    // Two devices/tabs hitting Render simultaneously would both connect to
+    // the same sandbox and run `bun remotion render` on the same output
+    // path — corrupting the file. The lock auto-releases on success
+    // (updateProjectWithRenderResult clears renderProgress) and on failure
+    // (catch block overwrites renderProgress.step).
+    const finalLock = await ctx.runMutation(
+      internal.tasks.internalTryRenderFinalLock,
+      { projectId }
+    );
+    if (!finalLock.ok) {
+      console.log("[render-final] skipping:", finalLock.error);
+      return { success: false, error: finalLock.error };
+    }
+
     let sandbox: Sandbox | undefined;
 
     try {
