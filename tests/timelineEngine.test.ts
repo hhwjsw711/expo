@@ -1,4 +1,4 @@
-// Boundary tests for the timeline operation engine (convex/lib/timelineEngine.ts).
+﻿// Boundary tests for the timeline operation engine (convex/lib/timelineEngine.ts).
 // Run with: bun test tests/timelineEngine.test.ts
 import { describe, expect, test } from "bun:test";
 import {
@@ -7,12 +7,18 @@ import {
   checkInvariants,
   MIN_SEGMENT_DURATION,
   MAX_SEGMENT_DURATION,
+  pushOpHistory,
+  undoOpHistory,
+  redoOpHistory,
+  EMPTY_OP_HISTORY,
+  OP_HISTORY_LIMIT,
+  type OpHistory,
   type TimelineDoc,
   type TimelineOperation,
 } from "../convex/lib/timelineEngine";
 import { validateTimelinePlan } from "../convex/lib/timelinePlan";
 
-// ─── fixtures ─────────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ fixtures 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 function baseDoc(): TimelineDoc {
   return {
@@ -31,7 +37,7 @@ function baseDoc(): TimelineDoc {
 
 const MEDIA = ["video0.mp4", "video1.mp4", "audio.mp3", "music.mp3", "subtitles.srt"];
 
-/** apply → apply(inverse) must land back on the exact original document. */
+/** apply 鈫?apply(inverse) must land back on the exact original document. */
 function roundTrip(doc: TimelineDoc, op: TimelineOperation) {
   const r = applyOperation(doc, op);
   expect(r.ok).toBe(true);
@@ -46,7 +52,7 @@ function roundTrip(doc: TimelineDoc, op: TimelineOperation) {
   expect(JSON.stringify(cur)).toBe(JSON.stringify(doc));
 }
 
-// ─── 1. trimSegment ────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ 1. trimSegment 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 describe("trimSegment", () => {
   test("duration change recomputes declared duration", () => {
@@ -96,7 +102,7 @@ describe("trimSegment", () => {
   });
 });
 
-// ─── 2. moveSegment ───────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ 2. moveSegment 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 describe("moveSegment", () => {
   test("moves forward (from < to)", () => {
@@ -130,7 +136,7 @@ describe("moveSegment", () => {
   });
 });
 
-// ─── 3. splitSegment ──────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ 3. splitSegment 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 describe("splitSegment", () => {
   test("splits into two halves preserving the total", () => {
@@ -161,7 +167,7 @@ describe("splitSegment", () => {
   });
 });
 
-// ─── 4. removeSegment ─────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ 4. removeSegment 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 describe("removeSegment", () => {
   test("removes and recomputes the declared duration", () => {
@@ -189,7 +195,7 @@ describe("removeSegment", () => {
   });
 });
 
-// ─── 5. insertSegment ─────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ 5. insertSegment 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 describe("insertSegment", () => {
   test("inserts at the start and recomputes duration", () => {
@@ -227,7 +233,7 @@ describe("insertSegment", () => {
   });
 });
 
-// ─── 6. replaceSegmentFile ────────────────────────────────────────────────
+// 鈹€鈹€鈹€ 6. replaceSegmentFile 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 describe("replaceSegmentFile", () => {
   test("swaps the source clip", () => {
@@ -249,7 +255,7 @@ describe("replaceSegmentFile", () => {
   });
 });
 
-// ─── 7. adjustAudio ───────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ 7. adjustAudio 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 describe("adjustAudio", () => {
   test("patches only the listed keys", () => {
@@ -273,7 +279,7 @@ describe("adjustAudio", () => {
   });
 });
 
-// ─── 8. adjustSubtitles ───────────────────────────────────────────────────
+// 鈹€鈹€鈹€ 8. adjustSubtitles 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 describe("adjustSubtitles", () => {
   test("toggles captions", () => {
@@ -287,7 +293,7 @@ describe("adjustSubtitles", () => {
   });
 });
 
-// ─── 9. document invariants ───────────────────────────────────────────────
+// 鈹€鈹€鈹€ 9. document invariants 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 describe("checkInvariants", () => {
   test("the base fixture passes", () => {
@@ -318,7 +324,7 @@ describe("checkInvariants", () => {
   });
 });
 
-// ─── 10. operation chains ──────────────────────────────────────────────────
+// 鈹€鈹€鈹€ 10. operation chains 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 describe("applyOperations", () => {
   test("chains operations and stops on the first failure", () => {
@@ -355,7 +361,7 @@ describe("applyOperations", () => {
   });
 });
 
-// ─── 11. engine → validator contract ──────────────────────────────────────
+// 鈹€鈹€鈹€ 11. engine 鈫?validator contract 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 describe("engine output always satisfies validateTimelinePlan", () => {
   const ops: TimelineOperation[] = [
@@ -380,3 +386,117 @@ describe("engine output always satisfies validateTimelinePlan", () => {
     }
   });
 });
+
+// 鈹€鈹€鈹€ 12. operation history (undo/redo core) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+
+describe("operation history (undo/redo)", () => {
+  /** Apply an op and record it in history in one step, like the editor does. */
+  function step(doc: TimelineDoc, history: OpHistory, op: TimelineOperation) {
+    const r = applyOperation(doc, op);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return null;
+    return { doc: r.timeline, history: pushOpHistory(history, { op, inverse: r.inverse }) };
+  }
+
+  const OPS: TimelineOperation[] = [
+    { type: "trimSegment", index: 0, duration: 4.5 },
+    { type: "splitSegment", index: 2, at: 1.4 },
+    { type: "adjustAudio", patch: { musicVolume: 0.7, includeMusic: false } },
+    { type: "moveSegment", from: 3, to: 0 },
+    { type: "removeSegment", index: 1 },
+    { type: "adjustSubtitles", patch: { includeCaptions: false } },
+  ];
+
+  test("push drops no-op entries (empty inverse)", () => {
+    const h = pushOpHistory(EMPTY_OP_HISTORY, { op: { type: "moveSegment", from: 1, to: 1 }, inverse: [] });
+    expect(h.past.length).toBe(0);
+  });
+
+  test("push clears the redo stack (new edit after undo)", () => {
+    let st = step(baseDoc(), EMPTY_OP_HISTORY, OPS[0]);
+    if (!st) return;
+    const undone = undoOpHistory(st.doc, st.history);
+    expect(undone.timeline).not.toBeNull();
+    const reEdited = pushOpHistory(undone.history, { op: OPS[2], inverse: [{ type: "adjustAudio", patch: {} }] });
+    expect(reEdited.future.length).toBe(0);
+  });
+
+  test("push honors the history limit", () => {
+    let h = EMPTY_OP_HISTORY;
+    for (let i = 0; i < OP_HISTORY_LIMIT + 10; i++) {
+      h = pushOpHistory(h, { op: { type: "adjustAudio", patch: { musicVolume: i / 100 } }, inverse: [{ type: "adjustAudio", patch: { musicVolume: 0.1 } }] });
+    }
+    expect(h.past.length).toBe(OP_HISTORY_LIMIT);
+  });
+
+  test("undo on empty history is a null step", () => {
+    const r = undoOpHistory(baseDoc(), EMPTY_OP_HISTORY);
+    expect(r.timeline).toBeNull();
+  });
+
+  test("redo on empty future is a null step", () => {
+    const r = redoOpHistory(baseDoc(), EMPTY_OP_HISTORY);
+    expect(r.timeline).toBeNull();
+  });
+
+  test("full undo restores the original; full redo restores the edited state", () => {
+    // replay the whole chain, recording history
+    let doc = baseDoc();
+    let history = EMPTY_OP_HISTORY;
+    for (const op of OPS) {
+      const st = step(doc, history, op);
+      if (!st) return;
+      doc = st.doc;
+      history = st.history;
+    }
+    expect(history.past.length).toBe(OPS.length);
+    const finalDoc = doc;
+
+    // undo everything
+    let undoneCount = 0;
+    for (;;) {
+      const r = undoOpHistory(doc, history);
+      if (!r.timeline) break;
+      doc = r.timeline;
+      history = r.history;
+      undoneCount++;
+      expect(checkInvariants(doc)).toBeNull();
+    }
+    expect(undoneCount).toBe(OPS.length);
+    expect(JSON.stringify(doc)).toBe(JSON.stringify(baseDoc()));
+
+    // redo everything
+    let redoneCount = 0;
+    for (;;) {
+      const r = redoOpHistory(doc, history);
+      if (!r.timeline) break;
+      doc = r.timeline;
+      history = r.history;
+      redoneCount++;
+      expect(checkInvariants(doc)).toBeNull();
+    }
+    expect(redoneCount).toBe(OPS.length);
+    expect(JSON.stringify(doc)).toBe(JSON.stringify(finalDoc));
+  });
+
+  test("undo interleaved with redo keeps documents invariant-valid", () => {
+    let doc = baseDoc();
+    let history = EMPTY_OP_HISTORY;
+    for (const op of OPS.slice(0, 3)) {
+      const st = step(doc, history, op);
+      if (!st) return;
+      doc = st.doc;
+      history = st.history;
+    }
+    // undo one, redo one, undo two, redo two 鈥?every intermediate must be valid
+    const u1 = undoOpHistory(doc, history);
+    expect(u1.timeline).not.toBeNull();
+    if (!u1.timeline) return;
+    expect(checkInvariants(u1.timeline)).toBeNull();
+    const r1 = redoOpHistory(u1.timeline, u1.history);
+    expect(r1.timeline).not.toBeNull();
+    if (!r1.timeline) return;
+    expect(JSON.stringify(r1.timeline)).toBe(JSON.stringify(doc));
+  });
+});
+

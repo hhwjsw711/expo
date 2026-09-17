@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { X, Play, Pause, Scissors, Volume2, VolumeX, Eye, EyeOff, ChevronLeft, ZoomIn, ZoomOut } from 'lucide-react-native';
+import { X, Play, Pause, Scissors, Volume2, VolumeX, Eye, EyeOff, ChevronLeft, ZoomIn, ZoomOut, Undo2, Redo2 } from 'lucide-react-native';
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Alert,
@@ -41,7 +41,12 @@ import { useApp } from '@/contexts/AppContext';
 import {
   applyOperation,
   checkInvariants,
+  pushOpHistory,
+  undoOpHistory,
+  redoOpHistory,
+  EMPTY_OP_HISTORY,
   type EngineAudio,
+  type OpHistory,
   type TimelineDoc,
   type TimelineOperation,
 } from "@/convex/lib/timelineEngine";
@@ -531,6 +536,16 @@ export default function VideoEditorScreen() {
   // Operation log (batch 2b): every landed edit, in order. This is the raw
   // material for undo/redo (batch 3a) and the edit manifest (batch 3b).
   const opLogRef = useRef<TimelineOperation[]>([]);
+  // Undo/redo history (batch 3a): entries carry op + inverse so undo replays
+  // the inverse and redo replays the op. Mirrored into canUndo/canRedo state
+  // so the header buttons can disable themselves.
+  const opHistoryRef = useRef<OpHistory>(EMPTY_OP_HISTORY);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const syncHistoryFlags = useCallback((h: OpHistory) => {
+    setCanUndo(h.past.length > 0);
+    setCanRedo(h.future.length > 0);
+  }, []);
   const [clipUrls, setClipUrls] = useState<Record<string, string>>({});
   const [originalAssContent, setOriginalAssContent] = useState<string>('');
   const [fallbackVideoUrl, setFallbackVideoUrl] = useState<string | null>(null);
@@ -1323,8 +1338,10 @@ export default function VideoEditorScreen() {
       return null;
     }
     opLogRef.current.push(op);
+    opHistoryRef.current = pushOpHistory(opHistoryRef.current, { op, inverse: r.inverse });
+    syncHistoryFlags(opHistoryRef.current);
     return syncSegmentsFromDoc(r.timeline, segs);
-  }, [editorData, voiceoverEnabled, musicEnabled, originalSoundEnabled, captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume, captions, playheadTime, totalDuration]);
+  }, [editorData, voiceoverEnabled, musicEnabled, originalSoundEnabled, captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume, captions, playheadTime, totalDuration, syncHistoryFlags]);
 
   const commitAudioOp = useCallback((patch: Partial<EngineAudio>): boolean => {
     const state: EditorState = {
@@ -1339,8 +1356,10 @@ export default function VideoEditorScreen() {
       return false;
     }
     opLogRef.current.push({ type: 'adjustAudio', patch });
+    opHistoryRef.current = pushOpHistory(opHistoryRef.current, { op: { type: 'adjustAudio', patch }, inverse: r.inverse });
+    syncHistoryFlags(opHistoryRef.current);
     return true;
-  }, [segments, editorData, voiceoverEnabled, musicEnabled, originalSoundEnabled, captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume, captions, playheadTime, totalDuration]);
+  }, [segments, editorData, voiceoverEnabled, musicEnabled, originalSoundEnabled, captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume, captions, playheadTime, totalDuration, syncHistoryFlags]);
 
   const commitSubtitlesOp = useCallback((patch: { includeCaptions?: boolean; adjustForPlaybackRate?: boolean; file?: string }): boolean => {
     const state: EditorState = {
@@ -1355,8 +1374,61 @@ export default function VideoEditorScreen() {
       return false;
     }
     opLogRef.current.push({ type: 'adjustSubtitles', patch });
+    opHistoryRef.current = pushOpHistory(opHistoryRef.current, { op: { type: 'adjustSubtitles', patch }, inverse: r.inverse });
+    syncHistoryFlags(opHistoryRef.current);
     return true;
-  }, [segments, editorData, voiceoverEnabled, musicEnabled, originalSoundEnabled, captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume, captions, playheadTime, totalDuration]);
+  }, [segments, editorData, voiceoverEnabled, musicEnabled, originalSoundEnabled, captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume, captions, playheadTime, totalDuration, syncHistoryFlags]);
+
+  // ── Undo / redo (batch 3a) ──
+  // Undo replays the newest entry's inverse against the document built
+  // from the CURRENT UI state; redo replays the original op. Every step
+  // goes through the engine, so intermediate states always satisfy the
+  // invariants. Undo/redo does not cross a save: after Export the history
+  // stays (still useful for further local edits), but the server has a
+  // revision already (optimistic lock protects the saved state).
+
+  const syncUiFromDoc = useCallback((doc: TimelineDoc) => {
+    setSegments(prev => syncSegmentsFromDoc(doc, prev));
+    if (doc.audio) {
+      setVoiceoverEnabled(doc.audio.includeVoice !== false);
+      setMusicEnabled(doc.audio.includeMusic !== false);
+      setOriginalSoundEnabled(doc.audio.includeOriginalSound === true);
+      if (doc.audio.voiceVolume != null) setVoiceoverVolume(doc.audio.voiceVolume);
+      if (doc.audio.musicVolume != null) setMusicVolume(doc.audio.musicVolume);
+      if (doc.audio.originalSoundVolume != null) setOriginalSoundVolume(doc.audio.originalSoundVolume);
+    }
+    if (doc.subtitles) {
+      setCaptionsEnabled(doc.subtitles.includeCaptions !== false);
+    }
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    const state: EditorState = {
+      segments, voiceoverEnabled, musicEnabled, originalSoundEnabled,
+      captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume,
+      captions, playheadTime, totalDuration,
+    };
+    const doc = buildEngineDoc(state, editorData?.timeline);
+    const step = undoOpHistory(doc, opHistoryRef.current);
+    if (!step.timeline) return;
+    opHistoryRef.current = step.history;
+    syncHistoryFlags(step.history);
+    syncUiFromDoc(step.timeline);
+  }, [segments, editorData, voiceoverEnabled, musicEnabled, originalSoundEnabled, captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume, captions, playheadTime, totalDuration, syncHistoryFlags, syncUiFromDoc]);
+
+  const handleRedo = useCallback(() => {
+    const state: EditorState = {
+      segments, voiceoverEnabled, musicEnabled, originalSoundEnabled,
+      captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume,
+      captions, playheadTime, totalDuration,
+    };
+    const doc = buildEngineDoc(state, editorData?.timeline);
+    const step = redoOpHistory(doc, opHistoryRef.current);
+    if (!step.timeline) return;
+    opHistoryRef.current = step.history;
+    syncHistoryFlags(step.history);
+    syncUiFromDoc(step.timeline);
+  }, [segments, editorData, voiceoverEnabled, musicEnabled, originalSoundEnabled, captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume, captions, playheadTime, totalDuration, syncHistoryFlags, syncUiFromDoc]);
 
   // Clip trimming with original duration clamping
   const handleTrimStart = useCallback((segId: string, side: 'left' | 'right', pageX: number) => {
@@ -1524,6 +1596,12 @@ export default function VideoEditorScreen() {
           <ChevronLeft size={24} color={Colors.white} />
         </TouchableOpacity>
         <Text style={styles.headerTitle} numberOfLines={1}>{project?.name || 'Untitled'}</Text>
+        <TouchableOpacity onPress={handleUndo} style={styles.headerButton} disabled={!canUndo}>
+          <Undo2 size={20} color={canUndo ? Colors.white : 'rgba(255,255,255,0.3)'} />
+        </TouchableOpacity>
+        <TouchableOpacity onPress={handleRedo} style={styles.headerButton} disabled={!canRedo}>
+          <Redo2 size={20} color={canRedo ? Colors.white : 'rgba(255,255,255,0.3)'} />
+        </TouchableOpacity>
         <TouchableOpacity
           onPress={handleSave}
           style={[styles.exportButton, saving && styles.exportButtonDisabled]}

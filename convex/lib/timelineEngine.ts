@@ -373,3 +373,79 @@ export function checkInvariants(doc: TimelineDoc): string | null {
   }
   return null;
 }
+
+// ─── Operation history (undo/redo core, batch 3a) ─────────────────────────
+// Three-segment history modeled on Timeline Studio's editorHistoryCore:
+// `past` holds applied entries (oldest → newest), `future` holds undone
+// entries (oldest-undone → newest-undone). Pushing a new edit clears the
+// future. Entries carry the operation AND its inverse, so undo replays the
+// inverse against the current document and redo replays the original op —
+// the op stream itself doubles as the audit manifest for batch 3b.
+
+export interface OpHistoryEntry {
+  op: TimelineOperation;
+  /** Inverse ops, in application order (already reversed by the engine). */
+  inverse: TimelineOperation[];
+}
+
+export interface OpHistory {
+  past: OpHistoryEntry[];
+  future: OpHistoryEntry[];
+}
+
+export const EMPTY_OP_HISTORY: OpHistory = { past: [], future: [] };
+
+export const OP_HISTORY_LIMIT = 50;
+
+/** Record an applied operation. No-op entries (empty inverse, e.g. a move
+ *  to the same position) are dropped — they carry no undoable effect. */
+export function pushOpHistory(
+  history: OpHistory,
+  entry: OpHistoryEntry,
+  limit: number = OP_HISTORY_LIMIT
+): OpHistory {
+  if (entry.inverse.length === 0) return history;
+  const safeLimit = Math.max(1, Math.floor(limit));
+  return {
+    past: [...history.past, entry].slice(-safeLimit),
+    future: [],
+  };
+}
+
+export interface HistoryStep {
+  history: OpHistory;
+  /** The document after the undo/redo, or null when there was nothing
+   *  to undo/redo or the replay failed (engine should never fail here —
+   *  inverses are validated symmetric to their ops). */
+  timeline: TimelineDoc | null;
+}
+
+/** Undo the newest entry: replay its inverse against the current document. */
+export function undoOpHistory(doc: TimelineDoc, history: OpHistory): HistoryStep {
+  const entry = history.past[history.past.length - 1];
+  if (!entry) return { history, timeline: null };
+  const result = applyOperations(doc, entry.inverse);
+  if (!result.ok) return { history, timeline: null };
+  return {
+    history: {
+      past: history.past.slice(0, -1),
+      future: [entry, ...history.future],
+    },
+    timeline: result.timeline,
+  };
+}
+
+/** Redo the oldest undone entry: replay its original op. */
+export function redoOpHistory(doc: TimelineDoc, history: OpHistory): HistoryStep {
+  const entry = history.future[0];
+  if (!entry) return { history, timeline: null };
+  const result = applyOperations(doc, [entry.op]);
+  if (!result.ok) return { history, timeline: null };
+  return {
+    history: {
+      past: [...history.past, entry],
+      future: history.future.slice(1),
+    },
+    timeline: result.timeline,
+  };
+}
