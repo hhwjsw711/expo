@@ -173,6 +173,20 @@ export const forkChatProject = mutation({
       status: "draft",
       chatEnabled: true,
       userMessageCount: 0,
+      // R3: copy the script + voice settings from the source so the fork is
+      // usable even if the frontend flow is interrupted between fork and
+      // updateProjectScript. Media assets (audioUrl/videoUrls) are NOT
+      // copied: the fork is a fresh start with a new script → the paid
+      // pipeline must regenerate them.
+      script: original.script,
+      voiceSpeed: original.voiceSpeed,
+      voiceVolume: original.voiceVolume,
+      musicVolume: original.musicVolume,
+      originalSoundVolume: original.originalSoundVolume,
+      includeVoice: original.includeVoice,
+      includeMusic: original.includeMusic,
+      includeCaptions: original.includeCaptions,
+      includeOriginalSound: original.includeOriginalSound,
     });
 
     // Copy chat messages
@@ -361,6 +375,26 @@ export const deleteProject = mutation({
       .collect();
     for (const msg of messages) {
       await ctx.db.delete(msg._id);
+    }
+
+    // R3: cascade-delete timeline history + edit manifests. Previously these
+    // rows were orphaned on every project deletion and accumulated forever
+    // (pure DB bloat; storage files may be shared with forked projects, so
+    // they are intentionally NOT deleted here).
+    const timelineRows = await ctx.db
+      .query("timelines")
+      .withIndex("by_project", (q) => q.eq("projectId", id))
+      .collect();
+    for (const row of timelineRows) {
+      await ctx.db.delete(row._id);
+    }
+
+    const manifestRows = await ctx.db
+      .query("editManifests")
+      .withIndex("by_project_revision", (q) => q.eq("projectId", id))
+      .collect();
+    for (const row of manifestRows) {
+      await ctx.db.delete(row._id);
     }
 
     await ctx.db.delete(id);
@@ -814,6 +848,16 @@ export const updateProjectAudioSettings = mutation({
 });
 
 // ─── Regenerate Project Editing ─────────────────────────────────────────────
+// Creates a new project sharing the source's media assets (voiceover, music,
+// animated clips) and asks the pipeline for a FRESH Claude edit plan.
+// The old version set status "processing" but copied NO media assets and no
+// scheduler ever picked the project up — it deadlocked in the feed showing
+// "processing" forever (audit M5).
+//
+// The fix: copy ALL media asset fields (they are the expensive outputs —
+// TTS + music + Kling are already paid for and identical for a re-edit)
+// and set status to "completed" WITHOUT timelineJson. The polling service's
+// Priority 3 branch then triggers createSequence → a new Claude run.
 export const regenerateProjectEditing = mutation({
   args: {
     sourceProjectId: v.id("projects"),
@@ -830,8 +874,22 @@ export const regenerateProjectEditing = mutation({
       fileMetadata: original.fileMetadata,
       thumbnail: original.thumbnail,
       createdAt: Date.now(),
-      status: "processing",
+      // "completed" + media assets + no timelineJson = the polling
+      // service's Priority 3 picks it up and runs a fresh Claude edit.
+      status: "completed",
       script: original.script,
+      audioUrl: original.audioUrl,
+      srtContent: original.srtContent,
+      musicUrl: original.musicUrl,
+      videoUrls: original.videoUrls,
+      voiceSpeed: original.voiceSpeed,
+      voiceVolume: original.voiceVolume,
+      musicVolume: original.musicVolume,
+      originalSoundVolume: original.originalSoundVolume,
+      includeVoice: original.includeVoice,
+      includeMusic: original.includeMusic,
+      includeCaptions: original.includeCaptions,
+      includeOriginalSound: original.includeOriginalSound,
       renderStep: "not_started",
       renderError: undefined,
     });

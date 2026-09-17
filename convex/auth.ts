@@ -44,6 +44,12 @@ export async function signUserJWT(userId: string): Promise<string> {
 // custom JWT) and enforces that the caller is authenticated. Returns the
 // Convex user id ("sub" claim) or throws.
 //
+// R3: also verifies the user record still exists. Without this, a deleted
+// account's JWT remains valid for up to 30 days (JWT_TTL_SECONDS) after
+// deletion — long enough to keep creating projects, uploading files, and
+// burning paid pipeline runs on an account that shouldn't exist anymore.
+// The extra DB read is served from Convex's transaction cache.
+//
 // Usage in a protected mutation/query/action:
 //   const userId = await requireAuth(ctx);
 // Works in all three contexts: MutationCtx, QueryCtx, ActionCtx.
@@ -61,6 +67,23 @@ export async function requireAuth(
   if (!userId) {
     throw new Error("Unauthorized: token has no subject");
   }
+
+  // R3: deleted accounts must not pass auth even with a valid-signature JWT.
+  // ctx.db is a DatabaseReader in all three context types at runtime
+  // (Convex >=1.17 exposes it on ActionCtx too), but the generated TS types
+  // don't include `db` on ActionCtx — probe it safely instead of asserting.
+  const ctxAny = ctx as { db?: { get(id: any): Promise<any> } };
+  if (ctxAny.db?.get) {
+    const user = await ctxAny.db.get(userId);
+    if (!user) {
+      throw new Error("Unauthorized: account no longer exists");
+    }
+  }
+  // For action contexts where db is genuinely unavailable at runtime, the
+  // check falls through — every sensitive action also re-checks project
+  // ownership or reads the user record, so the residual gap is limited to
+  // pure-auth helpers (generateUploadUrl), which don't burn paid APIs.
+
   return userId;
 }
 
