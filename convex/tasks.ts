@@ -1,4 +1,4 @@
-import { query, mutation, action, internalMutation } from "./_generated/server";
+import { query, mutation, action, internalMutation, internalQuery, internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -203,7 +203,11 @@ export const updateChatMessage = mutation({
     content: v.string(),
   },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    // Ownership check (R1): previously any authenticated user could edit
+    // ANYONE's message given its id. Resolve the owning project first.
+    const message = await ctx.db.get(args.messageId);
+    if (!message) throw new Error("Message not found");
+    await requireProjectOwnership(ctx, message.projectId);
     await ctx.db.patch(args.messageId, {
       content: args.content,
       isEdited: true,
@@ -283,7 +287,39 @@ export const getProjects = query({
 });
 
 // ─── Get Project ────────────────────────────────────────────────────────────
+// R1 security hardening: previously ANYONE with a project id could read its
+// full data (prompt, script, media URLs, rendered video). Now requires
+// auth + ownership. Foreign and missing projects both return null so the
+// "null = not visible" shape is unchanged for every existing caller.
 export const getProject = query({
+  args: {
+    id: v.id("projects"),
+  },
+  handler: async (ctx, { id }) => {
+    const project = await ctx.db.get(id);
+    if (!project) return null;
+
+    const userId = await requireAuth(ctx);
+    if (project.userId !== userId) return null;
+
+    return {
+      ...project,
+      fileUrls: await Promise.all(
+        project.files.map((fileId) => ctx.storage.getUrl(fileId))
+      ),
+      thumbnailUrl: project.thumbnail
+        ? await ctx.storage.getUrl(project.thumbnail)
+        : project.thumbnailUrl || null,
+    };
+  },
+});
+
+// ─── Internal: Get Project (server jobs) ──────────────────────────────────
+// Server-side variant for scheduler-triggered actions (no user JWT):
+// generateMediaAssets reads the project directly; ownership was already
+// validated at submit time by markProjectSubmitted, so no re-check here.
+// internalQuery = unreachable from the client.
+export const internalGetProject = internalQuery({
   args: {
     id: v.id("projects"),
   },
@@ -390,8 +426,11 @@ export const markProjectSubmitted = mutation({
       submittedAt: Date.now(),
       status: "processing",
     });
-    // Server-side scheduling: no longer relies on client fire-and-forget
-    await ctx.scheduler.runAfter(0, api.tasks.generateMediaAssets, {
+    // Server-side scheduling: no longer relies on client fire-and-forget.
+    // generateMediaAssets is an internalAction (R1): previously public with
+    // NO auth — anyone could trigger the full paid pipeline (TTS + music +
+    // Kling animation) on ANY project id.
+    await ctx.scheduler.runAfter(0, internal.tasks.generateMediaAssets, {
       projectId: id,
     });
     return { id };
@@ -443,7 +482,7 @@ export const regenerateScript = action({
         throw new Error(`script generation failed: ${scriptResult.error}`);
       }
 
-      await ctx.runMutation(api.tasks.updateProjectWithReelfulData, {
+      await ctx.runMutation(internal.tasks.updateProjectWithReelfulData, {
         id: projectId,
         script: scriptResult.script,
         status: "completed",
@@ -451,7 +490,7 @@ export const regenerateScript = action({
 
       return { success: true, script: scriptResult.script };
     } catch (error) {
-      await ctx.runMutation(api.tasks.updateProjectWithReelfulData, {
+      await ctx.runMutation(internal.tasks.updateProjectWithReelfulData, {
         id: projectId,
         error: error instanceof Error ? error.message : "script regeneration failed",
         status: "failed",
@@ -465,7 +504,9 @@ export const regenerateScript = action({
 });
 
 // ─── Update Project Status ──────────────────────────────────────────────────
-export const updateProjectStatus = mutation({
+// internalMutation (R1): previously public with NO auth — anyone could flip
+// any project to any status, breaking renders or unlocking paid pipelines.
+export const updateProjectStatus = internalMutation({
   args: {
     id: v.id("projects"),
     status: v.union(
@@ -483,8 +524,10 @@ export const updateProjectStatus = mutation({
   },
 });
 
-// ─── Update Project with Wordream Data ───────────────────────────────────────
-export const updateProjectWithReelfulData = mutation({
+// ─── Update Project with Wordream Data ─────────────────────────────────────
+// internalMutation (R1): previously public — anyone could overwrite any
+// project's script/audio/video assets.
+export const updateProjectWithReelfulData = internalMutation({
   args: {
     id: v.id("projects"),
     script: v.optional(v.string()),
@@ -516,7 +559,9 @@ export const updateProjectWithReelfulData = mutation({
 });
 
 // ─── Update Project with Render Result ──────────────────────────────────────
-export const updateProjectWithRenderResult = mutation({
+// internalMutation (R1): previously public — anyone could mark any project
+// completed with an arbitrary video URL (content injection into feeds).
+export const updateProjectWithRenderResult = internalMutation({
   args: {
     id: v.id("projects"),
     renderedVideoUrl: v.optional(v.string()),
@@ -536,7 +581,8 @@ export const updateProjectWithRenderResult = mutation({
 });
 
 // ─── Update Render Progress ─────────────────────────────────────────────────
-export const updateRenderProgress = mutation({
+// internalMutation (R1): previously public with NO auth.
+export const updateRenderProgress = internalMutation({
   args: {
     id: v.id("projects"),
     step: v.string(),
@@ -558,7 +604,9 @@ export const updateRenderProgress = mutation({
 // Atomically checks if project is already rendering; if so, returns false.
 // If not, sets status to "rendering" and returns true.
 // This prevents duplicate renderVideo calls from creating multiple sandboxes.
-export const tryAcquireRenderLock = mutation({
+// internalMutation (R1): previously public — anyone could lock any project
+// into "rendering" and permanently block its Branch B rebuild path.
+export const tryAcquireRenderLock = internalMutation({
   args: {
     id: v.id("projects"),
   },
@@ -579,8 +627,10 @@ export const tryAcquireRenderLock = mutation({
   },
 });
 
-// ─── Update Project Sandbox ─────────────────────────────────────────────────
-export const updateProjectSandbox = mutation({
+// ─── Update Project Sandbox ─────────────────────────────────────────────
+// internalMutation (R1): previously public — anyone could bind an arbitrary
+// sandbox id to any project and hijack its render flow.
+export const updateProjectSandbox = internalMutation({
   args: {
     id: v.id("projects"),
     // Optional so a dead sandbox can be cleared (undefined deletes the field).
@@ -1231,7 +1281,7 @@ export const generateScriptOnly = action({
 
       const script: string = scriptResult.script!;
 
-      await ctx.runMutation(api.tasks.updateProjectWithReelfulData, {
+      await ctx.runMutation(internal.tasks.updateProjectWithReelfulData, {
         id: projectId,
         script,
         status: "completed",
@@ -1239,7 +1289,7 @@ export const generateScriptOnly = action({
 
       return { success: true, script };
     } catch (error) {
-      await ctx.runMutation(api.tasks.updateProjectWithReelfulData, {
+      await ctx.runMutation(internal.tasks.updateProjectWithReelfulData, {
         id: projectId,
         error: error instanceof Error ? error.message : "script generation failed",
         status: "failed",
@@ -1254,7 +1304,11 @@ export const generateScriptOnly = action({
 });
 
 // ─── Generate Media Assets ──────────────────────────────────────────────────
-export const generateMediaAssets = action({
+// internalAction (R1): previously public with NO auth — anyone could trigger
+// the full paid pipeline (MiniMax TTS + MiniMax music + one FAL Kling run
+// per image) on any project id. Now only the scheduler (markProjectSubmitted)
+// can invoke it.
+export const generateMediaAssets = internalAction({
   args: {
     projectId: v.id("projects"),
   },
@@ -1267,7 +1321,7 @@ export const generateMediaAssets = action({
     const videoUrls: string[] = [];
 
     try {
-      const project = await ctx.runQuery(api.tasks.getProject, { id: projectId });
+      const project = await ctx.runQuery(internal.tasks.internalGetProject, { id: projectId });
       if (!project) {
         throw new Error("project not found");
       }
@@ -1277,7 +1331,7 @@ export const generateMediaAssets = action({
       }
 
       // Set status to processing
-      await ctx.runMutation(api.tasks.updateProjectStatus, {
+      await ctx.runMutation(internal.tasks.updateProjectStatus, {
         id: projectId,
         status: "processing",
       });
@@ -1304,7 +1358,7 @@ export const generateMediaAssets = action({
         }
       }
 
-      const voiceoverResult = await ctx.runAction(api.aiServices.generateVoiceover, {
+      const voiceoverResult = await ctx.runAction(internal.aiServices.generateVoiceover, {
         text: project.script,
         voiceId,
         speed: project.voiceSpeed ?? 1.0,
@@ -1324,7 +1378,7 @@ export const generateMediaAssets = action({
 
       console.log("[generate-media] step 2: generating background music");
 
-      const musicResult = await ctx.runAction(api.aiServices.generateMusic, {
+      const musicResult = await ctx.runAction(internal.aiServices.generateMusic, {
         prompt: prompts.musicGeneration.prompt(style),
       });
 
@@ -1369,7 +1423,7 @@ export const generateMediaAssets = action({
         console.log(`[generate-media] Processing image ${i + 1}/${imageOnlyUrls.length}`);
 
         try {
-          const animateResult = await ctx.runAction(api.aiServices.animateImage, {
+          const animateResult = await ctx.runAction(internal.aiServices.animateImage, {
             imageUrl: imageOnlyUrls[i],
           });
 
@@ -1380,7 +1434,7 @@ export const generateMediaAssets = action({
               videoUrls.push(videoUrl);
               console.log(`[generate-media] Animated image ${i + 1} SUCCESS, total videos: ${videoUrls.length}`);
 
-              await ctx.runMutation(api.tasks.updateProjectWithReelfulData, {
+              await ctx.runMutation(internal.tasks.updateProjectWithReelfulData, {
                 id: projectId,
                 script: project.script,
                 audioUrl: audioUrl || undefined,
@@ -1400,7 +1454,7 @@ export const generateMediaAssets = action({
         }
       }
 
-      await ctx.runMutation(api.tasks.updateProjectWithReelfulData, {
+      await ctx.runMutation(internal.tasks.updateProjectWithReelfulData, {
         id: projectId,
         script: project.script,
         audioUrl: audioUrl || undefined,
@@ -1414,7 +1468,7 @@ export const generateMediaAssets = action({
       return { success: true };
     } catch (error) {
       console.error("[generate-media] error:", error instanceof Error ? error.message : "unknown error");
-      await ctx.runMutation(api.tasks.updateProjectWithReelfulData, {
+      await ctx.runMutation(internal.tasks.updateProjectWithReelfulData, {
         id: projectId,
         error: error instanceof Error ? error.message : "media generation failed",
         status: "failed",

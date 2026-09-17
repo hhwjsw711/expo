@@ -4,6 +4,12 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { signUserJWT, requireAuth } from "./auth";
 
+// Max failed verify attempts before the OTP is destroyed and the user
+// must request a new code (brute-force guard).
+const MAX_OTP_ATTEMPTS = 5;
+// Cooldown between OTP sends for the same phone number.
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+
 // ─── Internal: Store OTP (used by phoneAuth) ────────────────────────────────
 export const storeOTP = internalMutation({
   args: {
@@ -26,7 +32,41 @@ export const storeOTP = internalMutation({
       code: args.code,
       expiresAt: args.expiresAt,
       createdAt: Date.now(),
+      attempts: 0,
     });
+  },
+});
+
+// ─── Internal: OTP send rate limit (used by phoneAuth.sendOTP) ──────────────
+// One row per phone in `otpRequests`. Rejects sends within the cooldown
+// window. Covers BOTH paths — Twilio Verify (which never touches otpCodes)
+// and the dev-mode local store — so SMS-bombing and Twilio cost attacks are
+// bounded regardless of the delivery mode.
+export const internalCheckOtpRateLimit = internalMutation({
+  args: { phone: v.string() },
+  handler: async (ctx, args): Promise<
+    { ok: true } | { ok: false; retryAfterMs: number }
+  > => {
+    const existing = await ctx.db
+      .query("otpRequests")
+      .withIndex("by_phone", (q) => q.eq("phone", args.phone))
+      .first();
+    const now = Date.now();
+    if (existing && now - existing.lastSentAt < OTP_RESEND_COOLDOWN_MS) {
+      return {
+        ok: false,
+        retryAfterMs: existing.lastSentAt + OTP_RESEND_COOLDOWN_MS - now,
+      };
+    }
+    if (existing) {
+      await ctx.db.patch(existing._id, { lastSentAt: now });
+    } else {
+      await ctx.db.insert("otpRequests", {
+        phone: args.phone,
+        lastSentAt: now,
+      });
+    }
+    return { ok: true };
   },
 });
 
@@ -76,8 +116,25 @@ export const verifyOTP = mutation({
       throw new Error("OTP expired. Please request a new code.");
     }
 
+    // Brute-force guard: a 6-digit code must not be verifiable an unlimited
+    // number of times within its 10-minute window. Count failures; destroy
+    // the code once the budget is exhausted so the user must re-request.
+    const attempts = storedOTP.attempts ?? 0;
+    if (attempts >= MAX_OTP_ATTEMPTS) {
+      await ctx.db.delete(storedOTP._id);
+      throw new Error("Too many attempts. Please request a new code.");
+    }
+
     if (storedOTP.code !== args.code) {
-      throw new Error("Invalid OTP code.");
+      const nextAttempts = attempts + 1;
+      if (nextAttempts >= MAX_OTP_ATTEMPTS) {
+        await ctx.db.delete(storedOTP._id);
+        throw new Error("Too many attempts. Please request a new code.");
+      }
+      await ctx.db.patch(storedOTP._id, { attempts: nextAttempts });
+      throw new Error(
+        `Invalid OTP code. ${MAX_OTP_ATTEMPTS - nextAttempts} attempts remaining.`
+      );
     }
 
     await ctx.db.delete(storedOTP._id);
@@ -158,21 +215,25 @@ export const backdoorLogin = mutation({
 
 // ─── Test Account Login ─────────────────────────────────────────────────────
 // Opt-in via ENABLE_TEST_ACCOUNT env var. Never grants premium/credits.
+// The phone number is HARDCODED to a dedicated test number: the previous
+// version accepted any phone argument, which (when the feature was enabled)
+// let anyone log in as any existing user — an account-takeover hole.
 export const testAccountLogin = mutation({
-  args: { phone: v.string() },
-  handler: async (ctx, args) => {
+  args: {},
+  handler: async (ctx) => {
     if (process.env.ENABLE_TEST_ACCOUNT !== "true") {
       throw new Error("Test account login is disabled");
     }
 
+    const testPhone = "+10000000001";
     let user = await ctx.db
       .query("users")
-      .withIndex("by_phone", (q) => q.eq("phone", args.phone))
+      .withIndex("by_phone", (q) => q.eq("phone", testPhone))
       .first();
 
     if (!user) {
       const userId = await ctx.db.insert("users", {
-        phone: args.phone,
+        phone: testPhone,
         name: "Test User",
         onboardingCompleted: false,
         createdAt: Date.now(),

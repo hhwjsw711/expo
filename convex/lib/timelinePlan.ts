@@ -10,12 +10,50 @@ export type TimelinePlanValidation =
   | { ok: false; error: string };
 
 /**
+ * True for a filename that is safe to interpolate into generated code:
+ * no path separators, quotes, backslashes, or control characters.
+ */
+function isSafeFilename(name: any): boolean {
+  return (
+    typeof name === "string" &&
+    name.length > 0 &&
+    !/[/\\'"`\n\r\t]/.test(name)
+  );
+}
+
+/**
+ * Validate a media file reference that generate-composition.ts interpolates
+ * (UNESCAPED) into double-quoted string literals in the generated TSX
+ * (audio.voiceFile / audio.musicFile / subtitles.file). Anything but a plain
+ * existing filename is a code-injection vector: escaping the string literal
+ * injects arbitrary TSX that executes at render time — inside the sandbox,
+ * where ANTHROPIC_API_KEY lives in the environment.
+ */
+function validateMediaRef(
+  label: string,
+  value: any,
+  availableFiles?: string[]
+): string | null {
+  if (value === undefined || value === null) return null; // omitted -> generator default
+  if (!isSafeFilename(value)) {
+    return `${label} is not a plain filename: ${JSON.stringify(value).slice(0, 60)}`;
+  }
+  if (availableFiles && availableFiles.length > 0 && !availableFiles.includes(value)) {
+    return `${label} "${value}" not found in public/media (available: ${availableFiles.join(", ")})`;
+  }
+  return null;
+}
+
+/**
  * Validate a timeline plan (timeline.json).
  * Fail fast on malformed plans instead of shipping a broken composition:
  * - valid JSON object
  * - non-empty segments[] with numeric times
  * - every segment file exists in the sandbox media directory (when the
  *   caller supplies the actual directory listing)
+ * - audio/subtitle file references are plain existing filenames (they are
+ *   interpolated unescaped into the generated TSX — injection guard)
+ * - fps / durationInFrames are positive numbers (interpolated raw)
  * - summed segment durations match the declared durationInSeconds within
  *   a small tolerance (playbackRate only speeds up the voice track and
  *   does NOT change on-screen segment time, so no adjustment is applied)
@@ -67,6 +105,38 @@ export function validateTimelinePlan(
     if (Number(seg.duration) <= 0 || Number(seg.duration) > 10) {
       return { ok: false, error: `segment ${seg.file} duration ${seg.duration}s out of range (0, 10]` };
     }
+  }
+
+  // Audio/subtitle file references are interpolated UNESCAPED into the
+  // generated TSX (generate-composition.ts) — validate them like segments
+  // to prevent code injection that exfiltrates ANTHROPIC_API_KEY.
+  // The availableFiles check applies only to *enabled* tracks: a disabled
+  // voice/music/caption path isn't rendered, so a missing file there is
+  // harmless (and may legitimately be absent when the user turned it off).
+  const audio = plan.audio;
+  if (audio && typeof audio === "object") {
+    if (audio.includeVoice !== false) {
+      const e = validateMediaRef("audio.voiceFile", audio.voiceFile, availableFiles);
+      if (e) return { ok: false, error: e };
+    }
+    if (audio.includeMusic !== false) {
+      const e = validateMediaRef("audio.musicFile", audio.musicFile, availableFiles);
+      if (e) return { ok: false, error: e };
+    }
+  }
+  const subs = plan.subtitles;
+  if (subs && typeof subs === "object" && subs.includeCaptions !== false) {
+    const e = validateMediaRef("subtitles.file", subs.file, availableFiles);
+    if (e) return { ok: false, error: e };
+  }
+
+  // Numeric fields are interpolated raw into generated code; non-numbers
+  // would crash the generator (num → toFixed on NaN throws).
+  if (!Number.isFinite(Number(plan.fps)) || Number(plan.fps) <= 0) {
+    return { ok: false, error: "fps must be a positive number" };
+  }
+  if (!Number.isFinite(Number(plan.durationInFrames)) || Number(plan.durationInFrames) <= 0) {
+    return { ok: false, error: "durationInFrames must be a positive number" };
   }
   return { ok: true, plan };
 }

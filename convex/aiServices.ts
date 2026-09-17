@@ -1,6 +1,6 @@
 "use node";
 
-import { action } from "./_generated/server";
+import { action, internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { fal } from "@fal-ai/client";
 import { api, internal } from "./_generated/api";
@@ -182,8 +182,12 @@ async function downloadImageAsDataUrl(imageUrl: string): Promise<string | null> 
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ANIMATE IMAGE (from sorah — FAL AI Kling image-to-video)
+// internalAction: billed per call (~$0.4/request). Only the server-side
+// generateMediaAssets pipeline may invoke it; it must NOT be callable from
+// the client (previously a public action with NO auth — anyone with the
+// deployment URL could burn the FAL balance in a loop).
 // ═══════════════════════════════════════════════════════════════════════════
-export const animateImage = action({
+export const animateImage = internalAction({
   args: {
     imageUrl: v.string(),
     prompt: v.optional(v.string()),
@@ -230,8 +234,10 @@ export const animateImage = action({
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GENERATE VOICEOVER (from sorah — MiniMax TTS with SRT subtitle generation)
+// internalAction: billed per call. Only the server-side generateMediaAssets
+// pipeline may invoke it (previously public with NO auth — unlimited cost).
 // ═══════════════════════════════════════════════════════════════════════════
-export const generateVoiceover = action({
+export const generateVoiceover = internalAction({
   args: {
     text: v.string(),
     voiceId: v.optional(v.string()),
@@ -336,8 +342,10 @@ export const generateVoiceover = action({
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GENERATE MUSIC (from sorah — MiniMax Music generation)
+// internalAction: billed per call. Only the server-side generateMediaAssets
+// pipeline may invoke it (previously public with NO auth — unlimited cost).
 // ═══════════════════════════════════════════════════════════════════════════
-export const generateMusic = action({
+export const generateMusic = internalAction({
   args: {
     prompt: v.string(),
   },
@@ -779,13 +787,16 @@ export const generateChatScript = action({
 
       // Save script and add assistant message if saveAndNotify is true
       if (args.saveAndNotify) {
-        await ctx.runMutation(api.tasks.updateProjectWithReelfulData, {
-          id: args.projectId,
-          script,
-          status: "completed",
-        });
+      // updateProjectWithReelfulData is an internal mutation (R1 security
+      // hardening); server-side runMutation calls reach internal functions
+      // fine — only direct client calls are blocked.
+      await ctx.runMutation(internal.tasks.updateProjectWithReelfulData, {
+        id: args.projectId,
+        script,
+        status: "completed",
+      });
 
-        await ctx.runMutation(api.tasks.addChatMessage, {
+      await ctx.runMutation(api.tasks.addChatMessage, {
           projectId: args.projectId,
           role: "assistant",
           content: script,

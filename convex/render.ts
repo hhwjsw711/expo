@@ -3,7 +3,7 @@
 import { action } from "./_generated/server";
 import { v } from "convex/values";
 import { Sandbox } from "e2b";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { prompts } from "./prompts";
 import { requireAuth } from "./auth";
@@ -276,7 +276,7 @@ async function downloadAndUploadVideo(
 
   // Download from sandbox
   console.log("[render] downloading video from sandbox...");
-  await ctx.runMutation(api.tasks.updateRenderProgress, {
+  await ctx.runMutation(internal.tasks.updateRenderProgress, {
     id: projectId,
     step: "downloading video",
     details: "fetching rendered file from sandbox",
@@ -292,7 +292,7 @@ async function downloadAndUploadVideo(
 
   // Upload to Convex storage
   console.log("[render] uploading to convex storage...");
-  await ctx.runMutation(api.tasks.updateRenderProgress, {
+  await ctx.runMutation(internal.tasks.updateRenderProgress, {
     id: projectId,
     step: "saving video",
     details: "uploading to permanent storage",
@@ -309,7 +309,7 @@ async function downloadAndUploadVideo(
   console.log("[render] uploaded, url:", renderedVideoUrl);
 
   // Update project
-  await ctx.runMutation(api.tasks.updateProjectWithRenderResult, {
+  await ctx.runMutation(internal.tasks.updateProjectWithRenderResult, {
     id: projectId,
     renderedVideoUrl: renderedVideoUrl || undefined,
     status: "completed",
@@ -382,7 +382,7 @@ export const createSequence = action({
 
     // Acquire render lock to prevent duplicate renders
     const lockResult: { success: boolean; error?: string } = await ctx.runMutation(
-      api.tasks.tryAcquireRenderLock,
+      internal.tasks.tryAcquireRenderLock,
       { id: projectId }
     );
     if (!lockResult.success) {
@@ -411,7 +411,7 @@ export const createSequence = action({
 
       if (!sandbox) {
         console.log("[sequence] creating new sandbox...");
-        await ctx.runMutation(api.tasks.updateRenderProgress, {
+        await ctx.runMutation(internal.tasks.updateRenderProgress, {
           id: projectId,
           step: "creating sandbox",
           details: "initializing e2b environment",
@@ -420,7 +420,7 @@ export const createSequence = action({
         sandbox = await createSandbox();
         console.log("[sequence] sandbox created:", sandbox.sandboxId);
 
-        await ctx.runMutation(api.tasks.updateProjectSandbox, {
+        await ctx.runMutation(internal.tasks.updateProjectSandbox, {
           id: projectId,
           sandboxId: sandbox.sandboxId,
         });
@@ -430,7 +430,7 @@ export const createSequence = action({
 
       // ── 2. Prepare media files (parallel download) ──
       console.log("[sequence] preparing media files...");
-      await ctx.runMutation(api.tasks.updateRenderProgress, {
+      await ctx.runMutation(internal.tasks.updateRenderProgress, {
         id: projectId,
         step: "uploading media",
         details: "transferring files to sandbox",
@@ -444,7 +444,7 @@ export const createSequence = action({
       if (hasTimelineJson) {
         // ── Branch B: User has edited the timeline — use generate-composition.ts ──
         console.log("[sequence] using existing timelineJson, skipping Claude");
-        await ctx.runMutation(api.tasks.updateRenderProgress, {
+        await ctx.runMutation(internal.tasks.updateRenderProgress, {
           id: projectId,
           step: "generating composition from timeline",
           details: "converting timeline edits to Remotion code",
@@ -489,7 +489,7 @@ export const createSequence = action({
         // The Remotion code is then generated deterministically from that
         // plan by generate-composition.ts — same path as user edits (Branch B).
         console.log("[sequence] no timelineJson, running claude agent (plan-only mode)...");
-        await ctx.runMutation(api.tasks.updateRenderProgress, {
+        await ctx.runMutation(internal.tasks.updateRenderProgress, {
           id: projectId,
           step: "claude video editing",
           details: "claude is analyzing footage and planning the edit",
@@ -561,7 +561,7 @@ export const createSequence = action({
           throw new Error(`failed to persist timeline: ${reason}`);
         }
 
-        await ctx.runMutation(api.tasks.updateRenderProgress, {
+        await ctx.runMutation(internal.tasks.updateRenderProgress, {
           id: projectId,
           step: "generating composition from timeline",
           details: "converting the edit plan to Remotion code",
@@ -578,7 +578,7 @@ export const createSequence = action({
         console.log("[sequence] composition generated from plan (same path as user edits)");
       }
 
-      await ctx.runMutation(api.tasks.updateRenderProgress, {
+      await ctx.runMutation(internal.tasks.updateRenderProgress, {
         id: projectId,
         step: "sequence created",
         details: "ready for final render",
@@ -620,17 +620,17 @@ export const createSequence = action({
         // re-acquire it — the project would deadlock in "rendering" forever.
         // Media assets are intact, so "completed" is the correct resting
         // state (matches the assets-ready condition everywhere).
-        await ctx.runMutation(api.tasks.updateProjectStatus, {
+        await ctx.runMutation(internal.tasks.updateProjectStatus, {
           id: projectId,
           status: "completed",
         });
-        await ctx.runMutation(api.tasks.updateRenderProgress, {
+        await ctx.runMutation(internal.tasks.updateRenderProgress, {
           id: projectId,
           step: "retry available",
           details: `transient error: ${errMsg.substring(0, 200)}`,
         });
       } else {
-        await ctx.runMutation(api.tasks.updateProjectWithRenderResult, {
+        await ctx.runMutation(internal.tasks.updateProjectWithRenderResult, {
           id: projectId,
           error: errMsg,
           status: "failed",
@@ -692,15 +692,15 @@ export const renderFinalVideo = action({
         // re-runs the sequence for the user instead of failing the project.
         const reason = connectError instanceof Error ? connectError.message : String(connectError);
         console.log("[render-final] sandbox unreachable, marking for rebuild:", reason);
-        await ctx.runMutation(api.tasks.updateProjectSandbox, {
+        await ctx.runMutation(internal.tasks.updateProjectSandbox, {
           id: projectId,
           sandboxId: undefined,
         });
-        await ctx.runMutation(api.tasks.updateProjectStatus, {
+        await ctx.runMutation(internal.tasks.updateProjectStatus, {
           id: projectId,
           status: "completed",
         });
-        await ctx.runMutation(api.tasks.updateRenderProgress, {
+        await ctx.runMutation(internal.tasks.updateRenderProgress, {
           id: projectId,
           step: "retry available",
           details: `sandbox expired, rebuilding: ${reason.substring(0, 150)}`,
@@ -714,7 +714,7 @@ export const renderFinalVideo = action({
 
       // ── 1. Disk cleanup + version sync ──
       console.log("[render-final] cleaning up disk...");
-      await ctx.runMutation(api.tasks.updateRenderProgress, {
+      await ctx.runMutation(internal.tasks.updateRenderProgress, {
         id: projectId,
         step: "preparing render",
         details: "cleaning up and syncing packages",
@@ -777,7 +777,7 @@ export const renderFinalVideo = action({
 
       if (existingCheck.stdout.trim() !== "exists" || existingSize < 1000 || !existingDurationOk) {
         console.log("[render-final] rendering:", compositionId);
-        await ctx.runMutation(api.tasks.updateRenderProgress, {
+        await ctx.runMutation(internal.tasks.updateRenderProgress, {
           id: projectId,
           step: "rendering video",
           details: `rendering composition: ${compositionId}`,
@@ -835,13 +835,13 @@ export const renderFinalVideo = action({
         // Keep status as "rendering" so the user can retry and recover.
         // Do NOT mark as "failed" — the video may already be rendered in the sandbox.
         console.log("[render-final] transient error, keeping sandbox alive for retry");
-        await ctx.runMutation(api.tasks.updateRenderProgress, {
+        await ctx.runMutation(internal.tasks.updateRenderProgress, {
           id: projectId,
           step: "retry available",
           details: `transient error: ${errMsg.substring(0, 200)}`,
         });
       } else {
-        await ctx.runMutation(api.tasks.updateProjectWithRenderResult, {
+        await ctx.runMutation(internal.tasks.updateProjectWithRenderResult, {
           id: projectId,
           error: errMsg,
           status: "failed",

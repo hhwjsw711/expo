@@ -7,6 +7,18 @@ export default defineSchema({
     code: v.string(),
     expiresAt: v.number(),
     createdAt: v.number(),
+    // Brute-force guard: failed verify attempts counted per active code.
+    // After MAX_OTP_ATTEMPTS failures the code is destroyed and the user
+    // must request a new one.
+    attempts: v.optional(v.number()),
+  }).index("by_phone", ["phone"]),
+
+  // Rate limiting for OTP sends — one row per phone, regardless of whether
+  // the code goes through Twilio Verify (which never touches otpCodes) or
+  // the dev-mode local store.
+  otpRequests: defineTable({
+    phone: v.string(),
+    lastSentAt: v.number(),
   }).index("by_phone", ["phone"]),
 
   users: defineTable({

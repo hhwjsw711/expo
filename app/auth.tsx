@@ -26,11 +26,14 @@ import { Country, DEFAULT_COUNTRY } from '@/constants/countries';
 import { Fonts } from '@/constants/typography';
 import { ENABLE_TEST_RUN_MODE } from '@/constants/config';
 
-// Retry helper with exponential backoff
+// Retry helper with exponential backoff.
+// `shouldRetry` lets callers mark business errors as non-retryable: retrying
+// e.g. a wrong OTP guess would silently burn the server-side attempt budget.
 async function retryWithBackoff<T>(
   fn: () => Promise<T>,
   maxRetries: number = 3,
-  baseDelay: number = 1000
+  baseDelay: number = 1000,
+  shouldRetry: (error: any) => boolean = () => true
 ): Promise<T> {
   let lastError: any;
   
@@ -39,6 +42,12 @@ async function retryWithBackoff<T>(
       return await fn();
     } catch (error: any) {
       lastError = error;
+      
+      // Non-retryable errors (business logic failures) fail immediately
+      if (!shouldRetry(error)) {
+        throw error;
+      }
+      
       console.log(`[Retry] Attempt ${attempt + 1}/${maxRetries} failed:`, error.message);
       
       // Don't retry on the last attempt
@@ -51,6 +60,16 @@ async function retryWithBackoff<T>(
   }
   
   throw lastError;
+}
+
+// OTP verification errors are deterministic business failures — retrying the
+// SAME wrong code must not consume the server's attempt budget (and must not
+// be retried for a new code either: the user has to re-enter manually).
+function isOtpBusinessError(error: any): boolean {
+  const msg: string = error?.message || '';
+  return msg.includes('OTP')
+    || msg.includes('attempts')
+    || msg.includes('Unauthorized');
 }
 
 export default function AuthScreen() {
@@ -164,7 +183,9 @@ export default function AuthScreen() {
         }
         setStep('code');
       } else {
-        Alert.alert('Error', result.error || 'Failed to send code');
+        // sendOTP returns { success, message } without throwing on
+        // rate-limit; surface the server's message (e.g. wait 45s).
+        Alert.alert('Error', result.message || result.error || 'Failed to send code');
       }
     } catch (error: any) {
       console.error('[Auth] Send OTP error:', error);
@@ -205,7 +226,9 @@ export default function AuthScreen() {
       console.log('[Auth] Verifying OTP...');
       console.log('[Auth] Using Twilio Verify:', useTwilioVerify);
       
-      // Call the appropriate verification method with retry logic
+      // Call the appropriate verification method with retry logic.
+      // OTP business errors (wrong code / attempts exhausted / expired) are
+      // NOT retried: a blind retry would consume the server attempt budget.
       const result = await retryWithBackoff(
         async () => {
           if (useTwilioVerify) {
@@ -219,7 +242,8 @@ export default function AuthScreen() {
           }
         },
         3,
-        1000
+        1000,
+        (error) => !isOtpBusinessError(error)
       );
       
       console.log('[Auth] Verification result:', result);
@@ -256,7 +280,9 @@ export default function AuthScreen() {
           'Could not connect to the server. Please check your internet connection and try again.'
         );
       } else {
-        Alert.alert('Error', 'Invalid code. Please try again.');
+        // Surface the server's message (it explains attempts remaining /
+        // code expiry) instead of a generic one.
+        Alert.alert('Error', errorMessage);
       }
       setCode('');
       setTimeout(() => hiddenCodeInputRef.current?.focus(), 100);

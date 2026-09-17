@@ -50,6 +50,23 @@ async function sendVerifyOTP(phone: string): Promise<void> {
 export const sendOTP = action({
   args: { phone: v.string() },
   handler: async (ctx, args) => {
+    // Rate limit FIRST, before any Twilio call: a per-phone 60s cooldown
+    // bounds SMS-bombing and Twilio cost attacks on both delivery paths.
+    const rateLimit = await ctx.runMutation(
+      internal.users.internalCheckOtpRateLimit,
+      { phone: args.phone }
+    );
+    if (!rateLimit.ok) {
+      const retryAfterSec = Math.ceil(rateLimit.retryAfterMs / 1000);
+      console.warn(`[phoneAuth] rate limited ${args.phone}: retry in ${retryAfterSec}s`);
+      return {
+        success: false,
+        message: `Please wait ${retryAfterSec}s before requesting another code.`,
+        rateLimited: true,
+        useTwilioVerify: false,
+      };
+    }
+
     const useTwilioVerify =
       process.env.USE_TWILIO_VERIFY === "true" ||
       process.env.NODE_ENV === "production";
