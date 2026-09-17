@@ -583,7 +583,35 @@ export const renderFinalVideo = action({
       if (!project.sandboxId) throw new Error("no sandbox found — create sequence first");
 
       console.log("[render-final] connecting to sandbox:", project.sandboxId);
-      sandbox = await Sandbox.connect(project.sandboxId, { apiKey: process.env.E2B_API_KEY, timeoutMs: 3600000 });
+      try {
+        sandbox = await Sandbox.connect(project.sandboxId, { apiKey: process.env.E2B_API_KEY, timeoutMs: 3600000 });
+      } catch (connectError) {
+        // The sandbox is gone (E2B reclaims it after the 1h timeout).
+        // This is NOT a permanent failure: the timeline and media assets are
+        // all in the database, so a fresh sandbox can be rebuilt via
+        // createSequence (Branch B). Release the lock, drop the dead
+        // sandboxId, and mark retry available — the polling service then
+        // re-runs the sequence for the user instead of failing the project.
+        const reason = connectError instanceof Error ? connectError.message : String(connectError);
+        console.log("[render-final] sandbox unreachable, marking for rebuild:", reason);
+        await ctx.runMutation(api.tasks.updateProjectSandbox, {
+          id: projectId,
+          sandboxId: undefined,
+        });
+        await ctx.runMutation(api.tasks.updateProjectStatus, {
+          id: projectId,
+          status: "completed",
+        });
+        await ctx.runMutation(api.tasks.updateRenderProgress, {
+          id: projectId,
+          step: "retry available",
+          details: `sandbox expired, rebuilding: ${reason.substring(0, 150)}`,
+        });
+        return {
+          success: false,
+          error: `sandbox expired, will rebuild it: ${reason}`,
+        };
+      }
       const sb: Sandbox = sandbox;
 
       // ── 1. Disk cleanup + version sync ──
@@ -601,20 +629,55 @@ export const renderFinalVideo = action({
       const compositionId = await getCompositionId(sb);
       const videoPath = `/home/user/out/${compositionId}.mp4`;
 
-      // Check if video already exists (recovery from previous timeout)
+      // Check if video already exists (recovery from previous timeout).
+      // A partially-written file from an interrupted render can easily be
+      // larger than the naive 1000-byte threshold, so ALSO verify the
+      // duration with ffprobe: a truncated render comes up far short of the
+      // composition length and must be re-rendered, not uploaded broken.
+      const expectedSeconds = (() => {
+        try {
+          const tl = project.timelineJson ? JSON.parse(project.timelineJson) : null;
+          const frames = Number(tl?.durationInFrames) || 0;
+          const fps = Number(tl?.fps) || 30;
+          return frames > 0 ? frames / fps : 0;
+        } catch {
+          return 0; // unparseable timeline → skip the duration check
+        }
+      })();
+
       const existingCheck = await sb.commands.run(`test -f "${videoPath}" && echo exists || echo missing`);
       let existingSize = 0;
+      let existingDurationOk = false;
       if (existingCheck.stdout.trim() === "exists") {
         const sizeResult = await sb.commands.run(
           `stat -f%z "${videoPath}" 2>/dev/null || stat -c%s "${videoPath}" 2>/dev/null`
         );
         existingSize = parseInt(sizeResult.stdout.trim() || "0");
         if (existingSize > 1000) {
-          console.log("[render-final] found existing render from previous attempt, size:", existingSize);
+          if (expectedSeconds > 0) {
+            const probeResult = await sb.commands.run(
+              `ffprobe -v error -show_entries format=duration -of csv=p=0 "${videoPath}" 2>&1`
+            );
+            const actualSeconds = parseFloat(probeResult.stdout.trim());
+            existingDurationOk = Number.isFinite(actualSeconds)
+              && Math.abs(actualSeconds - expectedSeconds) < 1;
+            if (existingSize > 1000 && !existingDurationOk) {
+              console.log(
+                `[render-final] existing render fails duration check (${actualSeconds}s vs expected ${expectedSeconds}s), re-rendering`
+              );
+            } else if (existingDurationOk) {
+              console.log("[render-final] found valid existing render from previous attempt, size:", existingSize);
+            }
+          } else {
+            // No expected duration available (unparseable timeline) — keep
+            // the old size-only behavior rather than re-rendering blind.
+            existingDurationOk = true;
+            console.log("[render-final] found existing render (no expected duration to verify), size:", existingSize);
+          }
         }
       }
 
-      if (existingCheck.stdout.trim() !== "exists" || existingSize < 1000) {
+      if (existingCheck.stdout.trim() !== "exists" || existingSize < 1000 || !existingDurationOk) {
         console.log("[render-final] rendering:", compositionId);
         await ctx.runMutation(api.tasks.updateRenderProgress, {
           id: projectId,

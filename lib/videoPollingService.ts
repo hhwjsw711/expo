@@ -214,24 +214,32 @@ export function useVideoPolling() {
               console.log('[VideoPolling] ⏳ Retry budget exhausted for:', video.id);
             }
           }
-          // Priority 3-FORK: saveEditorChanges forks the project as status
-          // 'processing' WITH a timelineJson payload (the user's edited
-          // timeline). No other branch advances this state: Priority 3
-          // below requires 'completed' without timelineJson, so the fork
-          // would sit in Priority 4 displaying "processing" forever — the
-          // edit → re-render journey deadlocks. Route it through
-          // createSequence, which takes Branch B (regenerate the
-          // composition from the edited timeline; the Claude agent is
-          // skipped, so this is fast and deterministic).
+          // Priority 3-FORK: a timeline EXISTS but the sandbox is gone —
+          // route it through createSequence (Branch B) to rebuild.
+          // Two sources reach this state:
+          //   a) saveEditorChanges forks the project as status 'processing'
+          //      WITH a timelineJson payload (the user's edited timeline).
+          //      No other branch advances it: Priority 3 below requires
+          //      'completed' without timelineJson, so the fork would sit in
+          //      Priority 4 displaying "processing" forever — the edit →
+          //      re-render journey deadlocks.
+          //   b) renderFinalVideo found the sandbox expired: it clears the
+          //      sandboxId, sets status back to 'completed' and marks step
+          //      'retry available'. Priority 3 also skips it (timelineJson
+          //      present), so without this branch the project deadlocks in
+          //      "Ready to Render" with no sandbox behind it.
+          // Branch B regenerates the composition from the timeline without
+          // re-running Claude, so both cases are fast and deterministic.
           else if (
-            project.status === 'processing' &&
+            (project.status === 'processing' ||
+             (project.status === 'completed' && project.renderProgress?.step === 'retry available')) &&
             project.timelineJson &&
             hasAllMediaAssets &&
             !project.renderedVideoUrl &&
             !project.sandboxId &&
             !renderTriggered.current.has(video.id)
           ) {
-            console.log('[VideoPolling] ✅ Edited fork ready! Triggering sequence (Branch B):', video.id);
+            console.log('[VideoPolling] ✅ Timeline ready, rebuilding sequence (Branch B):', video.id);
             renderTriggered.current.add(video.id);
             anyStateChanged = true;
             if (video.status === 'pending') {

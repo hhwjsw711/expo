@@ -214,8 +214,35 @@ export const [AppProvider, useApp] = createContextHook(() => {
           thumbnailUrl: project.thumbnailUrl,
         }));
 
+      // Add completed-with-timeline-but-no-sandbox projects: renderFinalVideo
+      // clears the sandboxId when the E2B sandbox expired, and edited forks
+      // arrive as status 'processing' with a timeline (handled by the
+      // processing branch above). Without this branch the expired-sandbox
+      // case falls through every filter — it disappears from the feed and
+      // the polling service can never trigger the Branch B rebuild.
+      const timelinePendingVideos: Video[] = backendProjects
+        .filter(project =>
+          project.status === 'completed' &&
+          !project.renderedVideoUrl &&
+          !project.sandboxId &&
+          project.timelineJson &&
+          project.audioUrl &&
+          project.videoUrls && project.videoUrls.length > 0
+        )
+        .map(project => ({
+          id: project._id,
+          uri: '',
+          prompt: project.prompt,
+          name: project.name, // AI-generated project name
+          script: transformScript(project.script),
+          createdAt: project.createdAt,
+          status: 'processing' as const,
+          projectId: project._id,
+          thumbnailUrl: project.thumbnailUrl,
+        }));
+
       // Filter out recently deleted videos to prevent them from reappearing during sync
-      const backendVideoList = [...backendVideos, ...draftVideos, ...processingVideos, ...sequencePendingVideos, ...failedVideos]
+      const backendVideoList = [...backendVideos, ...draftVideos, ...processingVideos, ...sequencePendingVideos, ...timelinePendingVideos, ...failedVideos]
         .filter(v => !recentlyDeletedIds.has(v.id));
       
       // Merge with existing local videos (in case there are any new ones not in backend yet)

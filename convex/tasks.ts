@@ -582,7 +582,8 @@ export const tryAcquireRenderLock = mutation({
 export const updateProjectSandbox = mutation({
   args: {
     id: v.id("projects"),
-    sandboxId: v.string(),
+    // Optional so a dead sandbox can be cleared (undefined deletes the field).
+    sandboxId: v.optional(v.string()),
   },
   handler: async (ctx, { id, sandboxId }) => {
     await ctx.db.patch(id, { sandboxId });
