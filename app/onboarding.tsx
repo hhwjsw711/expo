@@ -206,11 +206,26 @@ export default function OnboardingScreen() {
   const currentStepRef = useRef(0);
   const isGeneratingRef = useRef(false);
   const isSavingRef = useRef(false);
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const scheduleTimer = (fn: () => void, delay: number) => {
+    const id = setTimeout(fn, delay);
+    timersRef.current.push(id);
+    return id;
+  };
+
+  // Clear all pending timers on unmount
+  useEffect(() => {
+    return () => {
+      timersRef.current.forEach(clearTimeout);
+      timersRef.current = [];
+    };
+  }, []);
 
   const nextId = () => `msg-${++msgIdCounter.current}`;
 
   const scrollToBottom = useCallback(() => {
-    setTimeout(() => {
+    scheduleTimer(() => {
       scrollViewRef.current?.scrollToEnd({ animated: true });
     }, 50);
   }, []);
@@ -223,7 +238,7 @@ export default function OnboardingScreen() {
       content: ONBOARDING_STEPS[0].assistantText,
       timestamp: Date.now(),
     }]);
-    setTimeout(() => inputRef.current?.focus(), 300);
+    scheduleTimer(() => inputRef.current?.focus(), 300);
   }, []);
 
   // Scroll to bottom whenever messages change
@@ -259,9 +274,9 @@ export default function OnboardingScreen() {
     // 1. Intro message, then switch the composer into demo mode:
     // the clip strip + pre-filled prompt live in the input card (mirrors original),
     // and only become a user message once the user hits send.
-    setTimeout(() => {
+    scheduleTimer(() => {
       addAssistantMessage(DEMO_INTRO_TEXT);
-      setTimeout(() => {
+      scheduleTimer(() => {
         setDemoMode(true);
       }, 500);
     }, 700);
@@ -277,19 +292,19 @@ export default function OnboardingScreen() {
 
     // Progress steps appear sequentially
     DEMO_PROGRESS_STEPS.forEach((step, i) => {
-      setTimeout(() => {
+      scheduleTimer(() => {
         addAssistantMessage(step.text, 'progress', step.time, step.icon);
         // After last progress step: result video + explanation + email
         if (i === DEMO_PROGRESS_STEPS.length - 1) {
-          setTimeout(() => {
+          scheduleTimer(() => {
             addAssistantMessage(DEMO_RESULT_TEXT);
-            setTimeout(() => {
+            scheduleTimer(() => {
               addAssistantMessage('demo-result', 'result');
-              setTimeout(() => {
+              scheduleTimer(() => {
                 addAssistantMessage(DEMO_EXPLAIN_TEXT);
-                setTimeout(() => {
+                scheduleTimer(() => {
                   addAssistantMessage(DEMO_EMAIL_TEXT);
-                  setTimeout(() => {
+                  scheduleTimer(() => {
                     addAssistantMessage('email-card', 'email');
                     setIsGenerating(false);
                   }, 400);
@@ -306,7 +321,7 @@ export default function OnboardingScreen() {
     try {
       await Clipboard.setStringAsync(DEMO_CAPTION);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      scheduleTimer(() => setCopied(false), 2000);
     } catch (e) {
       console.log('[onboarding] copy failed:', e);
     }
@@ -350,19 +365,19 @@ export default function OnboardingScreen() {
     if (nextStepIndex < ONBOARDING_STEPS.length) {
       const nextStep = ONBOARDING_STEPS[nextStepIndex];
       const assistantText = nextStep.assistantText.replace('{name}', userName.current);
-      setTimeout(() => {
+      scheduleTimer(() => {
         addAssistantMessage(assistantText);
         setCurrentStep(nextStepIndex);
         currentStepRef.current = nextStepIndex;
         setInputValue('');
         isProcessingRef.current = false;
         if (nextStep.type === 'text') {
-          setTimeout(() => inputRef.current?.focus(), 300);
+          scheduleTimer(() => inputRef.current?.focus(), 300);
         }
       }, 400);
     } else {
       // All questions answered — start the demo sequence instead of completing
-      setTimeout(() => {
+      scheduleTimer(() => {
         setCurrentStep(nextStepIndex);
         currentStepRef.current = nextStepIndex;
         isProcessingRef.current = false;
@@ -404,7 +419,7 @@ export default function OnboardingScreen() {
         style: DEFAULT_STYLE as 'Playful' | 'Professional' | 'Dreamy',
       });
       console.log('[onboarding] Onboarding complete!');
-      setTimeout(() => {
+      scheduleTimer(() => {
         router.replace('/(tabs)');
       }, 1200);
     } catch (error) {
@@ -547,7 +562,7 @@ export default function OnboardingScreen() {
           ref={scrollViewRef}
           contentContainerStyle={[
             styles.scrollContent,
-            { paddingTop: insets.top + 20, paddingBottom: insets.bottom + 120 },
+            { paddingTop: insets.top + 20, paddingBottom: insets.bottom + (demoMode ? 200 : 120) },
           ]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"

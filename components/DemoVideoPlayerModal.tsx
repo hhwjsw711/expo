@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -112,7 +112,7 @@ export default function DemoVideoPlayerModal({
     if (!visible) {
       setSpeedMenuOpen(false);
       setPlaybackRate(1);
-      if (player) player.playbackRate = 1;
+      player.playbackRate = 1;
     }
   }, [visible, player]);
 
@@ -210,9 +210,9 @@ export default function DemoVideoPlayerModal({
           </ControlButton>
           <ControlButton onPress={togglePlay} size={64}>
             {isPlaying ? (
-              <Pause size={26} color="rgba(255,255,255,0.95)" strokeWidth={2} fill="rgba(255,255,255,0.95)" />
+              <Pause size={26} color={Colors.ink} strokeWidth={2} fill={Colors.ink} />
             ) : (
-              <Play size={26} color="rgba(255,255,255,0.95)" strokeWidth={2} fill="rgba(255,255,255,0.95)" />
+              <Play size={26} color={Colors.ink} strokeWidth={2} fill={Colors.ink} />
             )}
           </ControlButton>
           <ControlButton onPress={() => seekBy(10)} size={44}>
