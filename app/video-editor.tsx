@@ -38,6 +38,13 @@ import Colors from '@/constants/colors';
 import { Fonts } from '@/constants/typography';
 import { getScreenDimensions } from '@/lib/dimensions';
 import { useApp } from '@/contexts/AppContext';
+import {
+  applyOperation,
+  checkInvariants,
+  type EngineAudio,
+  type TimelineDoc,
+  type TimelineOperation,
+} from "@/convex/lib/timelineEngine";
 
 const { width: SCREEN_WIDTH } = getScreenDimensions();
 
@@ -285,18 +292,24 @@ function formatTime(seconds: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-function buildTimelineJson(state: EditorState, originalTimeline: any): string {
+// ─── Engine bridge: UI state ↔ engine document ─────────────────────────────
+// batch 2b: every landed edit goes through applyOperation (invariant-checked,
+// inverse-carrying). The editor keeps its own UI fields (id, clip URLs) —
+// buildEngineDoc projects them onto the pure timeline document, and
+// syncSegmentsFromDoc merges an engine result back by index.
+
+function buildEngineDoc(state: EditorState, originalTimeline: any): TimelineDoc {
   const totalDuration = state.segments.reduce((sum, s) => sum + s.duration, 0);
   const fps = originalTimeline?.fps ?? 30;
-  return JSON.stringify({
+  return {
     fps,
     durationInFrames: Math.round(totalDuration * fps),
-    durationInSeconds: parseFloat(totalDuration.toFixed(2)),
+    durationInSeconds: parseFloat(totalDuration.toFixed(4)),
     segments: state.segments.map(s => ({
       file: s.file,
       startFrom: s.startFrom,
       duration: s.duration,
-      comment: s.comment || '',
+      ...(s.comment ? { comment: s.comment } : {}),
     })),
     audio: {
       voiceFile: originalTimeline?.audio?.voiceFile ?? 'audio.mp3',
@@ -313,7 +326,23 @@ function buildTimelineJson(state: EditorState, originalTimeline: any): string {
       ...(originalTimeline?.subtitles ?? { file: 'subtitles.srt', adjustForPlaybackRate: true }),
       includeCaptions: state.captionsEnabled,
     },
-  }, null, 2);
+  };
+}
+
+/** Merge an engine result back into UI segments by index. Segments added by
+ *  the engine (split/insert) get a fresh id; removed ones are dropped. */
+function syncSegmentsFromDoc(doc: TimelineDoc, current: TimelineSegment[]): TimelineSegment[] {
+  let nextId = Date.now();
+  return doc.segments.map((seg, i) => {
+    const prev = current[i];
+    return {
+      ...(prev ?? { id: `seg_new_${nextId++}`, originalClipDuration: seg.duration }),
+      file: seg.file,
+      startFrom: seg.startFrom,
+      duration: seg.duration,
+      ...(seg.comment !== undefined ? { comment: seg.comment } : {}),
+    };
+  });
 }
 
 function getCacheDir(projectId?: string): string {
@@ -499,6 +528,9 @@ export default function VideoEditorScreen() {
   // baseRevision on save — a mismatch means another writer saved first and
   // the server rejects the stale write (optimistic locking).
   const baseRevisionRef = useRef(0);
+  // Operation log (batch 2b): every landed edit, in order. This is the raw
+  // material for undo/redo (batch 3a) and the edit manifest (batch 3b).
+  const opLogRef = useRef<TimelineOperation[]>([]);
   const [clipUrls, setClipUrls] = useState<Record<string, string>>({});
   const [originalAssContent, setOriginalAssContent] = useState<string>('');
   const [fallbackVideoUrl, setFallbackVideoUrl] = useState<string | null>(null);
@@ -529,6 +561,8 @@ export default function VideoEditorScreen() {
   const [trimSide, setTrimSide] = useState<'left' | 'right' | null>(null);
   const [trimStartX, setTrimStartX] = useState(0);
   const [trimOriginalValue, setTrimOriginalValue] = useState(0);
+  // Pre-trim snapshot (startFrom/duration) for rolling back a rejected trim.
+  const trimBeforeRef = useRef<{ startFrom: number; duration: number } | null>(null);
 
   // ── Thumbnails & durations ──
   const [segmentThumbnails, setSegmentThumbnails] = useState<Record<string, { thumbs: string[]; fullDuration: number; url?: string }>>({});
@@ -1164,7 +1198,18 @@ export default function VideoEditorScreen() {
         captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume,
         captions, playheadTime, totalDuration,
       };
-      const timelineJson = buildTimelineJson(state, editorData.timeline);
+      const timelineJson = (() => {
+        const doc = buildEngineDoc(state, editorData.timeline);
+        // The engine guarantees these invariants for landed ops, but the
+        // check also catches hand-corrupted drafts restored from storage.
+        const invariantErr = checkInvariants(doc);
+        if (invariantErr) {
+          Alert.alert('Save Failed', `Timeline check failed: ${invariantErr}`, [{ text: 'OK' }]);
+          return null;
+        }
+        return JSON.stringify(doc, null, 2);
+      })();
+      if (timelineJson === null) return;
       let assContent: string | undefined;
       if (originalAssContent && captions.length > 0) {
         assContent = rebuildAssContent(originalAssContent, captions);
@@ -1216,7 +1261,7 @@ export default function VideoEditorScreen() {
         };
         const draftKey = `@editor_draft_${projectId}`;
         await AsyncStorage.setItem(draftKey, JSON.stringify({
-          timelineJson: buildTimelineJson(state, editorData.timeline),
+          timelineJson: JSON.stringify(buildEngineDoc(state, editorData.timeline), null, 2),
           assContent: originalAssContent && captions.length > 0
             ? rebuildAssContent(originalAssContent, captions)
             : undefined,
@@ -1256,6 +1301,63 @@ export default function VideoEditorScreen() {
     setSelectedClipId(null);
   }, []);
 
+  // ── Engine commit path (batch 2b) ──
+  // All landed edits go through applyOperation: invariant-checked, and each
+  // op is logged for undo/redo + the edit manifest. Returns the new UI
+  // segments on success, or null when rejected (caller keeps its state).
+
+  const commitSegmentOp = useCallback((
+    op: TimelineOperation,
+    segs: TimelineSegment[]
+  ): TimelineSegment[] | null => {
+    const state: EditorState = {
+      segments: segs, voiceoverEnabled, musicEnabled, originalSoundEnabled,
+      captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume,
+      captions, playheadTime, totalDuration,
+    };
+    const doc = buildEngineDoc(state, editorData?.timeline);
+    const r = applyOperation(doc, op);
+    if (!r.ok) {
+      console.warn('[video-editor] operation rejected:', op.type, r.error);
+      Alert.alert('Edit Rejected', r.error);
+      return null;
+    }
+    opLogRef.current.push(op);
+    return syncSegmentsFromDoc(r.timeline, segs);
+  }, [editorData, voiceoverEnabled, musicEnabled, originalSoundEnabled, captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume, captions, playheadTime, totalDuration]);
+
+  const commitAudioOp = useCallback((patch: Partial<EngineAudio>): boolean => {
+    const state: EditorState = {
+      segments, voiceoverEnabled, musicEnabled, originalSoundEnabled,
+      captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume,
+      captions, playheadTime, totalDuration,
+    };
+    const doc = buildEngineDoc(state, editorData?.timeline);
+    const r = applyOperation(doc, { type: 'adjustAudio', patch });
+    if (!r.ok) {
+      console.warn('[video-editor] audio op rejected:', r.error);
+      return false;
+    }
+    opLogRef.current.push({ type: 'adjustAudio', patch });
+    return true;
+  }, [segments, editorData, voiceoverEnabled, musicEnabled, originalSoundEnabled, captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume, captions, playheadTime, totalDuration]);
+
+  const commitSubtitlesOp = useCallback((patch: { includeCaptions?: boolean; adjustForPlaybackRate?: boolean; file?: string }): boolean => {
+    const state: EditorState = {
+      segments, voiceoverEnabled, musicEnabled, originalSoundEnabled,
+      captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume,
+      captions, playheadTime, totalDuration,
+    };
+    const doc = buildEngineDoc(state, editorData?.timeline);
+    const r = applyOperation(doc, { type: 'adjustSubtitles', patch });
+    if (!r.ok) {
+      console.warn('[video-editor] subtitles op rejected:', r.error);
+      return false;
+    }
+    opLogRef.current.push({ type: 'adjustSubtitles', patch });
+    return true;
+  }, [segments, editorData, voiceoverEnabled, musicEnabled, originalSoundEnabled, captionsEnabled, musicVolume, voiceoverVolume, originalSoundVolume, captions, playheadTime, totalDuration]);
+
   // Clip trimming with original duration clamping
   const handleTrimStart = useCallback((segId: string, side: 'left' | 'right', pageX: number) => {
     const seg = segments.find(s => s.id === segId);
@@ -1263,6 +1365,9 @@ export default function VideoEditorScreen() {
     setTrimmingClip(segId);
     setTrimSide(side);
     setTrimStartX(pageX);
+    // Snapshot the pre-trim segment so a rejected trim can roll the
+    // in-progress preview back exactly.
+    trimBeforeRef.current = { startFrom: seg.startFrom, duration: seg.duration };
     setTrimOriginalValue(side === 'left' ? seg.startFrom : seg.duration);
   }, [segments]);
 
@@ -1289,18 +1394,43 @@ export default function VideoEditorScreen() {
   }, [trimmingClip, trimSide, trimStartX, trimOriginalValue, pixelsPerSecond]);
 
   const handleTrimEnd = useCallback(() => {
+    // Land the trim through the engine: the previewed values become a
+    // trimSegment op. If the engine rejects them (bounds, source duration),
+    // roll the preview back to the pre-trim snapshot.
+    if (trimmingClip && trimBeforeRef.current) {
+      const seg = segments.find(s => s.id === trimmingClip);
+      const before = trimBeforeRef.current;
+      if (seg) {
+        const index = segments.findIndex(s => s.id === trimmingClip);
+        const op: TimelineOperation = {
+          type: 'trimSegment',
+          index,
+          startFrom: seg.startFrom,
+          duration: seg.duration,
+          sourceDuration: seg.originalClipDuration,
+        };
+        const result = commitSegmentOp(op, segments);
+        if (!result) {
+          setSegments(prev => prev.map(s =>
+            s.id === trimmingClip ? { ...s, startFrom: before.startFrom, duration: before.duration } : s
+          ));
+        } else {
+          setSegments(result);
+        }
+      }
+    }
+    trimBeforeRef.current = null;
     setTrimmingClip(null);
     setTrimSide(null);
-  }, []);
+  }, [trimmingClip, segments, commitSegmentOp]);
 
   const moveClip = useCallback((fromIndex: number, toIndex: number) => {
-    setSegments(prev => {
-      const newSegments = [...prev];
-      const [moved] = newSegments.splice(fromIndex, 1);
-      newSegments.splice(toIndex, 0, moved);
-      return newSegments;
-    });
-  }, []);
+    const op: TimelineOperation = { type: 'moveSegment', from: fromIndex, to: toIndex };
+    const result = commitSegmentOp(op, segments);
+    if (result) {
+      setSegments(result);
+    }
+  }, [segments, commitSegmentOp]);
 
   const handleEditCaption = useCallback((caption: Caption) => {
     setEditingCaption(caption);
@@ -1661,7 +1791,7 @@ export default function VideoEditorScreen() {
             {/* Original Sound track */}
             <View style={[styles.trackContainer, { marginTop: 8 }]}>
               <View style={styles.audioTrackLabel}>
-                <TouchableOpacity style={styles.audioTrackLabelRow} onPress={() => setOriginalSoundEnabled(!originalSoundEnabled)}>
+                <TouchableOpacity style={styles.audioTrackLabelRow} onPress={() => { if (commitAudioOp({ includeOriginalSound: !originalSoundEnabled })) setOriginalSoundEnabled(!originalSoundEnabled); }}>
                   {originalSoundEnabled ? (
                     <Volume2 size={12} color={Colors.ember} />
                   ) : (
@@ -1669,7 +1799,7 @@ export default function VideoEditorScreen() {
                   )}
                   <Text style={[styles.trackLabelText, !originalSoundEnabled && styles.trackLabelMuted]}>Original Sound</Text>
                 </TouchableOpacity>
-                <VolumeSlider value={originalSoundVolume} onValueChange={setOriginalSoundVolume} enabled={originalSoundEnabled} color={Colors.ember} onDragStart={() => setDraggingVolume(true)} onDragEnd={() => setDraggingVolume(false)} />
+                <VolumeSlider value={originalSoundVolume} onValueChange={setOriginalSoundVolume} enabled={originalSoundEnabled} color={Colors.ember} onDragStart={() => setDraggingVolume(true)} onDragEnd={() => { commitAudioOp({ originalSoundVolume }); setDraggingVolume(false); }} />
               </View>
               <TouchableOpacity style={styles.trackContent} activeOpacity={1} onPress={handleTrackBackgroundTap}>
                 {segments.map((seg, index) => {
@@ -1710,7 +1840,7 @@ export default function VideoEditorScreen() {
             {/* Voiceover track */}
             <View style={styles.trackContainer}>
               <View style={styles.audioTrackLabel}>
-                <TouchableOpacity style={styles.audioTrackLabelRow} onPress={() => setVoiceoverEnabled(!voiceoverEnabled)}>
+                <TouchableOpacity style={styles.audioTrackLabelRow} onPress={() => { if (commitAudioOp({ includeVoice: !voiceoverEnabled })) setVoiceoverEnabled(!voiceoverEnabled); }}>
                   {voiceoverEnabled ? (
                     <Volume2 size={12} color="#4CAF50" />
                   ) : (
@@ -1718,7 +1848,7 @@ export default function VideoEditorScreen() {
                   )}
                   <Text style={[styles.trackLabelText, !voiceoverEnabled && styles.trackLabelMuted]}>Voice</Text>
                 </TouchableOpacity>
-                <VolumeSlider value={voiceoverVolume} onValueChange={setVoiceoverVolume} enabled={voiceoverEnabled} color="#4CAF50" onDragStart={() => setDraggingVolume(true)} onDragEnd={() => setDraggingVolume(false)} />
+                <VolumeSlider value={voiceoverVolume} onValueChange={setVoiceoverVolume} enabled={voiceoverEnabled} color="#4CAF50" onDragStart={() => setDraggingVolume(true)} onDragEnd={() => { commitAudioOp({ voiceVolume: voiceoverVolume }); setDraggingVolume(false); }} />
               </View>
               <TouchableOpacity style={styles.trackContent} activeOpacity={1} onPress={handleTrackBackgroundTap}>
                 <View
@@ -1752,7 +1882,7 @@ export default function VideoEditorScreen() {
             {/* Music track */}
             <View style={styles.trackContainer}>
               <View style={styles.audioTrackLabel}>
-                <TouchableOpacity style={styles.audioTrackLabelRow} onPress={() => setMusicEnabled(!musicEnabled)}>
+                <TouchableOpacity style={styles.audioTrackLabelRow} onPress={() => { if (commitAudioOp({ includeMusic: !musicEnabled })) setMusicEnabled(!musicEnabled); }}>
                   {musicEnabled ? (
                     <Volume2 size={12} color="#2196F3" />
                   ) : (
@@ -1760,7 +1890,7 @@ export default function VideoEditorScreen() {
                   )}
                   <Text style={[styles.trackLabelText, !musicEnabled && styles.trackLabelMuted]}>Music</Text>
                 </TouchableOpacity>
-                <VolumeSlider value={musicVolume} onValueChange={setMusicVolume} enabled={musicEnabled} color="#2196F3" onDragStart={() => setDraggingVolume(true)} onDragEnd={() => setDraggingVolume(false)} />
+                <VolumeSlider value={musicVolume} onValueChange={setMusicVolume} enabled={musicEnabled} color="#2196F3" onDragStart={() => setDraggingVolume(true)} onDragEnd={() => { commitAudioOp({ musicVolume }); setDraggingVolume(false); }} />
               </View>
               <TouchableOpacity style={styles.trackContent} activeOpacity={1} onPress={handleTrackBackgroundTap}>
                 <View
@@ -1795,7 +1925,7 @@ export default function VideoEditorScreen() {
             <View style={styles.trackContainer}>
               <TouchableOpacity
                 style={styles.trackLabel}
-                onPress={() => setCaptionsEnabled(!captionsEnabled)}
+                onPress={() => { if (commitSubtitlesOp({ includeCaptions: !captionsEnabled })) setCaptionsEnabled(!captionsEnabled); }}
               >
                 {captionsEnabled ? (
                   <Eye size={12} color="#FF9800" />
