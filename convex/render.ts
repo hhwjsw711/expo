@@ -457,11 +457,23 @@ export const createSequence = action({
         console.log("[sequence] timeline plan validated:", validated.plan.segments.length, "segments,",
           validated.plan.segments.reduce((s: number, seg: any) => s + seg.duration, 0).toFixed(2) + "s total");
 
-        // Persist the plan, then generate the composition deterministically
-        await ctx.runMutation(api.tasks.updateProjectTimelineJson, {
-          id: projectId,
+        // Persist the plan (revision 1, source 'ai'), then generate the
+        // composition deterministically. The optimistic lock should never
+        // fire here — we hold the render lock — but if it ever does, fail
+        // loudly instead of silently clobbering a concurrent editor save.
+        const revResult = await ctx.runMutation(api.tasks.saveTimelineRevision, {
+          projectId,
+          baseRevision: project.timelineRevision ?? 0,
           timelineJson: timelineStr,
+          source: "ai",
+          note: "claude agent plan",
         });
+        if (!revResult.success) {
+          const reason = revResult.conflict
+            ? `revision conflict: loaded ${project.timelineRevision ?? 0}, server is at ${revResult.currentRevision}`
+            : revResult.error;
+          throw new Error(`failed to persist timeline: ${reason}`);
+        }
 
         await ctx.runMutation(api.tasks.updateRenderProgress, {
           id: projectId,

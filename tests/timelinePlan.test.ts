@@ -2,7 +2,7 @@
 // Run with: bun test tests/timelinePlan.test.ts
 // (bun's built-in test runner — no new dependencies.)
 import { describe, expect, test } from "bun:test";
-import { validateTimelinePlan } from "../convex/lib/timelinePlan";
+import { validateTimelinePlan, resolveTimelineRevision } from "../convex/lib/timelinePlan";
 
 // ─── fixtures ─────────────────────────────────────────────────────────────
 
@@ -323,5 +323,42 @@ describe("real-world regressions", () => {
       "video0.mp4", "audio.mp3", "music.mp3", "subtitles.srt",
     ]);
     expect(r.ok).toBe(false);
+  });
+});
+
+// ─── 9. timeline revision optimistic lock ──────────────────────────────────
+
+describe("resolveTimelineRevision (optimistic lock)", () => {
+  test("pre-migration project (no revision stored) accepts base 0 → next 1", () => {
+    const r = resolveTimelineRevision(undefined, 0);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.nextRevision).toBe(1);
+  });
+  test("matching revisions advance by one", () => {
+    const r = resolveTimelineRevision(3, 3);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.nextRevision).toBe(4);
+  });
+  test("stale base (behind current) is a conflict reporting the server revision", () => {
+    const r = resolveTimelineRevision(5, 3);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.conflict).toBe(true);
+      expect(r.currentRevision).toBe(5);
+    }
+  });
+  test("base ahead of current is a conflict (defensive)", () => {
+    const r = resolveTimelineRevision(2, 3);
+    expect(r.ok).toBe(false);
+  });
+  test("pre-migration project with nonzero base is a conflict (base must be 0)", () => {
+    const r = resolveTimelineRevision(undefined, 1);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.currentRevision).toBe(0);
+  });
+  test("non-finite base is a conflict, never a silent pass", () => {
+    expect(resolveTimelineRevision(1, NaN).ok).toBe(false);
+    expect(resolveTimelineRevision(1, Infinity).ok).toBe(false);
+    expect(resolveTimelineRevision(1, -1).ok).toBe(false);
   });
 });

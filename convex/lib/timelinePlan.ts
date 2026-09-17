@@ -70,3 +70,21 @@ export function validateTimelinePlan(
   }
   return { ok: true, plan };
 }
+
+/**
+ * Optimistic-lock check for timeline saves.
+ * `currentRevision` is the project's stored revision counter (missing = 0,
+ * i.e. pre-migration projects); `baseRevision` is the revision the client
+ * LOADED its timeline from. They must match, otherwise a concurrent writer
+ * saved in between and the stale write must be rejected.
+ */
+export function resolveTimelineRevision(
+  currentRevision: number | undefined,
+  baseRevision: number
+): { ok: true; nextRevision: number } | { ok: false; conflict: true; currentRevision: number } {
+  const current = currentRevision ?? 0;
+  if (!Number.isFinite(baseRevision) || baseRevision !== current) {
+    return { ok: false, conflict: true, currentRevision: current };
+  }
+  return { ok: true, nextRevision: current + 1 };
+}

@@ -4,6 +4,7 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { prompts } from "./prompts";
 import { requireAuth, requireProjectOwnership } from "./auth";
+import { resolveTimelineRevision } from "./lib/timelinePlan";
 
 const isImageUrl = (url: string): boolean => {
   const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
@@ -591,17 +592,71 @@ export const updateProjectSandbox = mutation({
   },
 });
 
-// ─── Update Project Timeline JSON ──────────────────────────────────────────
-// Saves the timeline.json read back from the sandbox (after Claude agent runs)
-// so the mobile editor can use it for preview/editing.
-export const updateProjectTimelineJson = mutation({
+// ─── Timeline Revisions (optimistic locking + audit history) ────────────────
+// Every timeline write appends a row to `timelines` and bumps
+// projects.timelineRevision. Writers pass the revision they LOADED as
+// baseRevision; a mismatch means someone else saved first (two devices,
+// or a user edit racing an automated rebuild) and the stale write is
+// rejected instead of silently clobbering the newer timeline.
+export const saveTimelineRevision = mutation({
   args: {
-    id: v.id("projects"),
+    projectId: v.id("projects"),
+    baseRevision: v.number(),
     timelineJson: v.string(),
+    source: v.union(v.literal("ai"), v.literal("user"), v.literal("system")),
+    note: v.optional(v.string()),
   },
-  handler: async (ctx, { id, timelineJson }) => {
-    await ctx.db.patch(id, { timelineJson });
-    return id;
+  handler: async (ctx, { projectId, baseRevision, timelineJson, source, note }): Promise<
+    { success: true; revision: number }
+    | { success: false; conflict: true; currentRevision: number }
+    | { success: false; conflict?: undefined; error: string }
+  > => {
+    await requireProjectOwnership(ctx, projectId);
+    try {
+      const project = await ctx.db.get(projectId);
+      if (!project) throw new Error("project not found");
+
+      const check = resolveTimelineRevision(project.timelineRevision, baseRevision);
+      if (!check.ok) {
+        return { success: false, conflict: true, currentRevision: check.currentRevision };
+      }
+
+      await ctx.db.insert("timelines", {
+        projectId,
+        revision: check.nextRevision,
+        timelineJson,
+        source,
+        note: note ?? undefined,
+        createdAt: Date.now(),
+      });
+      await ctx.db.patch(projectId, {
+        timelineJson,
+        timelineRevision: check.nextRevision,
+      });
+      return { success: true, revision: check.nextRevision };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "failed to save timeline" };
+    }
+  },
+});
+
+// Timeline lineage for a project (newest first). The timelineJson payload is
+// intentionally omitted — fetch a specific revision if you need the content.
+export const getTimelineHistory = query({
+  args: { projectId: v.id("projects") },
+  handler: async (ctx, { projectId }) => {
+    await requireProjectOwnership(ctx, projectId);
+    const rows = await ctx.db
+      .query("timelines")
+      .withIndex("by_project", (q) => q.eq("projectId", projectId))
+      .order("desc")
+      .take(50);
+    return rows.map(r => ({
+      revision: r.revision,
+      source: r.source,
+      note: r.note ?? null,
+      createdAt: r.createdAt,
+    }));
   },
 });
 
@@ -853,7 +908,7 @@ export const getProjectEditorData = action({
   args: {
     projectId: v.id("projects"),
   },
-  handler: async (ctx, args): Promise<{ success: boolean; clipUrls?: Record<string, string>; videoUrls?: string[]; fileUrls?: string[]; fileMetadata?: any[]; musicVolume?: number; baseVideoUrl?: string | null; renderedVideoUrl?: string | null; timeline?: any; duration?: number; voiceAudioUrl?: string | null; musicAudioUrl?: string | null; assContent?: string; srtContent?: string; voiceSpeed?: number; voiceVolume?: number; originalSoundVolume?: number; includeVoice?: boolean; includeMusic?: boolean; includeCaptions?: boolean; includeOriginalSound?: boolean; error?: string }> => {
+  handler: async (ctx, args): Promise<{ success: boolean; clipUrls?: Record<string, string>; videoUrls?: string[]; fileUrls?: string[]; fileMetadata?: any[]; musicVolume?: number; baseVideoUrl?: string | null; renderedVideoUrl?: string | null; timeline?: any; timelineRevision?: number; duration?: number; voiceAudioUrl?: string | null; musicAudioUrl?: string | null; assContent?: string; srtContent?: string; voiceSpeed?: number; voiceVolume?: number; originalSoundVolume?: number; includeVoice?: boolean; includeMusic?: boolean; includeCaptions?: boolean; includeOriginalSound?: boolean; error?: string }> => {
     const authUserId = await requireAuth(ctx);
     const project = await ctx.runQuery(api.tasks.getProject, { id: args.projectId });
     if (!project) {
@@ -892,6 +947,9 @@ export const getProjectEditorData = action({
       baseVideoUrl: project.renderedVideoUrl || null,
       renderedVideoUrl: project.renderedVideoUrl || null,
       timeline,
+      // Revision snapshot for optimistic locking: the editor passes this
+      // back as baseRevision when saving.
+      timelineRevision: project.timelineRevision ?? 0,
       duration: project.duration ?? 10,
       voiceAudioUrl: project.audioUrl || null,
       musicAudioUrl: project.musicUrl || null,
@@ -911,25 +969,51 @@ export const getProjectEditorData = action({
 // ─── Save Editor Changes ────────────────────────────────────────────────────
 // Saves timeline/ASS to the original project, then creates a fork for re-rendering.
 // Previously an action calling two deleted mutations; rewritten as a single mutation.
+// The save is guarded by a timeline revision optimistic lock: the client passes
+// the revision it loaded (baseRevision); if the project moved on meanwhile the
+// save is rejected with conflict=true so the editor can prompt a refresh.
 export const saveEditorChanges = mutation({
   args: {
     projectId: v.id("projects"),
     timelineJson: v.string(),
     assContent: v.optional(v.string()),
+    baseRevision: v.number(),
   },
-  handler: async (ctx, { projectId, timelineJson, assContent }): Promise<{ success: boolean; newProjectId?: Id<"projects">; error?: string }> => {
+  handler: async (ctx, { projectId, timelineJson, assContent, baseRevision }): Promise<{ success: boolean; newProjectId?: Id<"projects">; conflict?: boolean; currentRevision?: number; error?: string }> => {
     await requireProjectOwnership(ctx, projectId);
     try {
       const original = await ctx.db.get(projectId);
       if (!original) throw new Error("project not found");
 
+      // 0. Optimistic-lock check — reject stale writes instead of clobbering
+      const check = resolveTimelineRevision(original.timelineRevision, baseRevision);
+      if (!check.ok) {
+        return {
+          success: false,
+          conflict: true,
+          currentRevision: check.currentRevision,
+        };
+      }
+
       // 1. Save timeline/ASS to the original project (preserves editor state)
+      //    and record the revision in the history table.
+      await ctx.db.insert("timelines", {
+        projectId,
+        revision: check.nextRevision,
+        timelineJson,
+        source: "user",
+        note: "editor save",
+        createdAt: Date.now(),
+      });
       await ctx.db.patch(projectId, {
         timelineJson,
+        timelineRevision: check.nextRevision,
         assContent: assContent ?? original.assContent,
       });
 
-      // 2. Create a new project fork for re-rendering
+      // 2. Create a new project fork for re-rendering.
+      //    The fork inherits the revision it was forked from; its own history
+      //    table starts empty and fills from the next edit onwards.
       const newProjectId = await ctx.db.insert("projects", {
         userId: original.userId,
         prompt: original.prompt,
@@ -944,6 +1028,7 @@ export const saveEditorChanges = mutation({
         musicUrl: original.musicUrl,
         videoUrls: original.videoUrls,
         timelineJson,
+        timelineRevision: check.nextRevision,
         assContent: assContent ?? original.assContent,
         voiceSpeed: original.voiceSpeed,
         voiceVolume: original.voiceVolume,

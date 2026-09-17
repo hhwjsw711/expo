@@ -495,6 +495,10 @@ export default function VideoEditorScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editorData, setEditorData] = useState<any>(null);
+  // Timeline revision snapshot taken when editor data loads. Passed back as
+  // baseRevision on save — a mismatch means another writer saved first and
+  // the server rejects the stale write (optimistic locking).
+  const baseRevisionRef = useRef(0);
   const [clipUrls, setClipUrls] = useState<Record<string, string>>({});
   const [originalAssContent, setOriginalAssContent] = useState<string>('');
   const [fallbackVideoUrl, setFallbackVideoUrl] = useState<string | null>(null);
@@ -783,6 +787,7 @@ export default function VideoEditorScreen() {
         if (cancelled) return;
 
         setEditorData(data);
+        baseRevisionRef.current = data.timelineRevision ?? 0;
         setClipUrls(data.clipUrls || {});
         setMusicVolume(data.musicVolume || 0.1);
         setFallbackVideoUrl(data.baseVideoUrl || data.renderedVideoUrl || null);
@@ -1164,7 +1169,24 @@ export default function VideoEditorScreen() {
       if (originalAssContent && captions.length > 0) {
         assContent = rebuildAssContent(originalAssContent, captions);
       }
-      const result = await saveEditorChanges({ projectId, timelineJson, assContent });
+      const result = await saveEditorChanges({ projectId, timelineJson, assContent, baseRevision: baseRevisionRef.current });
+
+      if (result?.conflict) {
+        // Optimistic-lock rejection: the project was changed elsewhere while
+        // this editor was open. The in-page edit state is kept; the user must
+        // reload the project to get the newer timeline before saving again.
+        Alert.alert(
+          'Project Updated',
+          'This project was changed elsewhere while you were editing. Please reopen it to get the latest version, then apply your changes again.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      if (!result?.success || !result.newProjectId) {
+        Alert.alert('Save Failed', result?.error || 'Failed to save edits.', [{ text: 'OK' }]);
+        return;
+      }
+
       console.log('[video-editor] Editor export started, new project:', result?.newProjectId);
       Alert.alert('Rendering', 'A new version is being rendered with your edits. This may take a couple of minutes.',
         [{ text: 'OK', onPress: () => {

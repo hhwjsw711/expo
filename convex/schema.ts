@@ -110,6 +110,12 @@ export default defineSchema({
     keepOrder: v.optional(v.boolean()),
     animationStatus: v.optional(v.string()),
     timelineJson: v.optional(v.string()),
+    // Monotonic revision counter for the timeline. Missing = 0 (pre-migration
+    // projects). Every timeline write bumps it and appends a row to the
+    // `timelines` history table. Clients pass the revision they loaded as
+    // baseRevision to save, giving optimistic locking against concurrent
+    // edits (two devices, or a user edit racing an automated rebuild).
+    timelineRevision: v.optional(v.number()),
     assContent: v.optional(v.string()),
     mediaDescriptions: v.optional(v.array(v.object({
       storageId: v.id("_storage"),
@@ -129,6 +135,22 @@ export default defineSchema({
     includeCaptions: v.optional(v.boolean()),
     includeOriginalSound: v.optional(v.boolean()),
   }).index("by_user", ["userId"]),
+
+  // Timeline version history — one row per write, for audit and rollback.
+  // The current revision is denormalized onto projects.timelineJson /
+  // projects.timelineRevision; this table keeps the full lineage.
+  timelines: defineTable({
+    projectId: v.id("projects"),
+    revision: v.number(),
+    timelineJson: v.string(),
+    source: v.union(
+      v.literal("ai"),    // Claude agent plan (Branch A)
+      v.literal("user"),  // editor save (saveEditorChanges / saveTimelineRevision)
+      v.literal("system"), // automated recovery / rebuild
+    ),
+    note: v.optional(v.string()),
+    createdAt: v.number(),
+  }).index("by_project", ["projectId", "revision"]),
 
   chatMessages: defineTable({
     projectId: v.id("projects"),
