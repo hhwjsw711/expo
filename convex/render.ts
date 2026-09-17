@@ -7,69 +7,9 @@ import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { prompts } from "./prompts";
 import { requireAuth } from "./auth";
+import { validateTimelinePlan } from "./lib/timelinePlan";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
-
-/**
- * Validate a timeline plan (timeline.json produced by the Claude agent).
- * Fail fast on malformed plans instead of shipping a broken composition:
- * - valid JSON object
- * - non-empty segments[] with numeric times
- * - every segment file exists in the sandbox media directory
- * - summed segment durations match the declared durationInSeconds within
- *   a small tolerance (playbackRate only speeds up the voice track and does
- *   NOT change on-screen segment time, so no adjustment is applied)
- */
-function validateTimelinePlan(
-  raw: string,
-  availableFiles?: string[]
-): { ok: true; plan: any } | { ok: false; error: string } {
-  if (!raw || raw.trim().length === 0) return { ok: false, error: "empty plan" };
-  let plan: any;
-  try {
-    plan = JSON.parse(raw);
-  } catch {
-    return { ok: false, error: "not valid JSON" };
-  }
-  if (!plan || typeof plan !== "object") return { ok: false, error: "not an object" };
-  if (!Array.isArray(plan.segments) || plan.segments.length === 0) {
-    return { ok: false, error: "segments[] is empty" };
-  }
-  // Segments play back-to-back and fill the whole composition, so their sum
-  // must match the declared duration. playbackRate only affects how fast the
-  // voiceover audio plays (audio ends early if > 1), not the screen time.
-  const totalDuration = plan.segments.reduce(
-    (sum: number, seg: any) => sum + (Number(seg?.duration) || 0),
-    0
-  );
-  const declared = Number(plan?.durationInSeconds) || 0;
-  if (declared > 0 && Math.abs(totalDuration - declared) > 0.75) {
-    return {
-      ok: false,
-      error: `segment durations (${totalDuration.toFixed(2)}s) != declared ${declared.toFixed(2)}s`,
-    };
-  }
-  for (const seg of plan.segments) {
-    if (!seg?.file || typeof seg.file !== "string" || seg.file.includes("/")) {
-      return { ok: false, error: "segment is missing a plain 'file' name" };
-    }
-    // Cross-check against the real sandbox directory: referencing a file
-    // that was never downloaded would render a black screen.
-    if (availableFiles && availableFiles.length > 0 && !availableFiles.includes(seg.file)) {
-      return {
-        ok: false,
-        error: `segment file "${seg.file}" not found in public/media (available: ${availableFiles.join(", ")})`,
-      };
-    }
-    if (!Number.isFinite(Number(seg.startFrom)) || !Number.isFinite(Number(seg.duration))) {
-      return { ok: false, error: `segment ${seg.file} has non-numeric startFrom/duration` };
-    }
-    if (Number(seg.duration) <= 0 || Number(seg.duration) > 10) {
-      return { ok: false, error: `segment ${seg.file} duration ${seg.duration}s out of range (0, 10]` };
-    }
-  }
-  return { ok: true, plan };
-}
 
 /** Parse composition ID from Root.tsx in sandbox. Prefers "Main". */
 async function getCompositionId(sb: Sandbox): Promise<string> {
@@ -426,6 +366,24 @@ export const createSequence = action({
 
         // Write timeline.json into the sandbox
         await sb.files.write("/home/user/timeline.json", project.timelineJson!);
+
+        // Validate the client-supplied timeline with the SAME rules as the
+        // AI plan. The editor normally emits well-formed JSON, but a stale
+        // client or a bug could ship NaN times or reference a file that was
+        // never downloaded — without validation that surfaces later as an
+        // opaque "remotion render failed" instead of a clear, fixable error.
+        // Note the distinct error prefix: user data never fixes itself by
+        // re-running, so this is a PERMANENT failure (unlike the AI plan,
+        // whose "timeline.json invalid" prefix is classified transient).
+        const lsResult = await sb.commands.run("ls /home/user/public/media");
+        const mediaFiles = lsResult.stdout
+          .split("\n")
+          .map((l: string) => l.trim())
+          .filter(Boolean);
+        const editCheck = validateTimelinePlan(project.timelineJson!, mediaFiles);
+        if (!editCheck.ok) {
+          throw new Error(`edited timeline invalid: ${editCheck.error}`);
+        }
 
         // Run generate-composition.ts (reads timeline.json, writes src/Root.tsx + src/Composition.tsx)
         const genResult = await sb.commands.run("bun run generate-composition.ts", {

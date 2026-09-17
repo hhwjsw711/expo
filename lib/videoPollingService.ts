@@ -214,6 +214,41 @@ export function useVideoPolling() {
               console.log('[VideoPolling] ⏳ Retry budget exhausted for:', video.id);
             }
           }
+          // Priority 3-FORK: saveEditorChanges forks the project as status
+          // 'processing' WITH a timelineJson payload (the user's edited
+          // timeline). No other branch advances this state: Priority 3
+          // below requires 'completed' without timelineJson, so the fork
+          // would sit in Priority 4 displaying "processing" forever — the
+          // edit → re-render journey deadlocks. Route it through
+          // createSequence, which takes Branch B (regenerate the
+          // composition from the edited timeline; the Claude agent is
+          // skipped, so this is fast and deterministic).
+          else if (
+            project.status === 'processing' &&
+            project.timelineJson &&
+            hasAllMediaAssets &&
+            !project.renderedVideoUrl &&
+            !project.sandboxId &&
+            !renderTriggered.current.has(video.id)
+          ) {
+            console.log('[VideoPolling] ✅ Edited fork ready! Triggering sequence (Branch B):', video.id);
+            renderTriggered.current.add(video.id);
+            anyStateChanged = true;
+            if (video.status === 'pending') {
+              updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl ?? undefined);
+            }
+            createSequence({ projectId: video.projectId as any })
+              .then((result) => {
+                if (!result?.success) {
+                  console.warn('[VideoPolling] Fork sequence not started:', result?.error);
+                  return;
+                }
+                console.log('[VideoPolling] ✅ Fork sequence created for:', video.id);
+              })
+              .catch((error) => {
+                console.warn('[VideoPolling] Fork sequence error:', error);
+              });
+          }
           // Priority 3b: Sandbox exists but video not rendered — keep as processing
           // (previously auto-resumed renderFinalVideo; now user must tap Render in video-preview)
           else if (

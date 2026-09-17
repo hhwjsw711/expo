@@ -89,11 +89,17 @@ export default function LoaderScreen() {
 
     // Only trigger when status is completed AND all media assets exist AND not already rendered
     // AND sequence hasn't been created yet (no sandboxId and no timelineJson)
-    const sequenceAlreadyCreated = !!project.sandboxId || !!project.timelineJson;
+    // EXCEPTION — edited forks: saveEditorChanges inserts the fork with
+    // status 'processing' and a timelineJson payload. For a fork the
+    // timeline IS the input, not evidence of an existing sequence, so we
+    // still route it through createSequence (Branch B regenerates the
+    // composition from the edited timeline without re-running Claude).
+    const isEditedFork = project.status === "processing" && !!project.timelineJson && !project.sandboxId;
+    const sequenceAlreadyCreated = !isEditedFork && (!!project.sandboxId || !!project.timelineJson);
     if (
-      project.status === "completed" && 
+      (project.status === "completed" || isEditedFork) &&
       hasAllMediaAssets &&
-      !project.renderedVideoUrl && 
+      !project.renderedVideoUrl &&
       !sequenceAlreadyCreated &&
       !renderTriggeredRef.current
     ) {
