@@ -187,14 +187,17 @@ export const [AppProvider, useApp] = createContextHook(() => {
       // Without this branch such projects fall through every filter above,
       // disappear from the feed, and the polling service never triggers
       // sequence creation — the pipeline deadlocks at "assets ready".
-      // Note: projects with status 'completed' but NO media assets are
+      // NOTE: no `!project.sandboxId` filter here — a project whose first
+      // createSequence attempt timed out transiently KEEPS its sandbox and
+      // shows step "retry available"; it must stay visible so the polling
+      // service's retry branch (which requires sandboxId) can pick it up.
+      // Projects with status 'completed' but NO media assets are
       // script-ready drafts (user hasn't tapped Generate yet) — those are
       // owned by the chat flow and must NOT be listed as processing here.
       const sequencePendingVideos: Video[] = backendProjects
         .filter(project =>
           project.status === 'completed' &&
           !project.renderedVideoUrl &&
-          !project.sandboxId &&
           !project.timelineJson &&
           project.audioUrl &&
           project.videoUrls && project.videoUrls.length > 0
