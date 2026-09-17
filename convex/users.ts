@@ -171,6 +171,13 @@ export const backdoorLogin = mutation({
     password: v.string(),
   },
   handler: async (ctx, args) => {
+    // R2: hard production block — even if DISABLE_BACKDOOR is not set, the
+    // backdoor must never be reachable in production. Belt-and-suspenders
+    // alongside the existing DISABLE_BACKDOOR env var check.
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("Backdoor login is not available in production");
+    }
+
     // Dev-only shortcut. Password MUST be set via BACKDOOR_PASSWORD env var;
     // no hardcoded default. Unset -> login is always rejected.
     const backdoorPassword = process.env.BACKDOOR_PASSWORD;
@@ -221,6 +228,12 @@ export const backdoorLogin = mutation({
 export const testAccountLogin = mutation({
   args: {},
   handler: async (ctx) => {
+    // R2: hard production block — test account login must never be reachable
+    // in production, regardless of ENABLE_TEST_ACCOUNT env var.
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("Test account login is not available in production");
+    }
+
     if (process.env.ENABLE_TEST_ACCOUNT !== "true") {
       throw new Error("Test account login is disabled");
     }
@@ -280,6 +293,20 @@ export const internalGetVoiceSettings = internalQuery({
   },
 });
 
+// ─── Internal: Refund Credit (used by generateMediaAssets catch block) ──────
+// Adds 1 credit back to purchasedCredits. Called when the paid pipeline fails
+// AFTER markProjectSubmitted already deducted a credit (creditCharged=true).
+// internalMutation = unreachable from the client.
+export const internalRefundCredit = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, { userId }) => {
+    const user = await ctx.db.get(userId);
+    if (!user) return;
+    const current = user.purchasedCredits || 0;
+    await ctx.db.patch(userId, { purchasedCredits: current + 1 });
+  },
+});
+
 // ─── Get Default Voices ─────────────────────────────────────────────────────
 export const getDefaultVoices = query({
   args: {},
@@ -336,14 +363,19 @@ export const getVideoGenerationStatus = query({
       };
     }
 
-    // Count user's completed/rendering projects
+    // Count user's projects that consumed or are consuming the paid
+    // pipeline — same rule as markProjectSubmitted (R2: includes
+    // "processing" so the UI count matches the enforced quota).
     const projects = await ctx.db
       .query("projects")
       .withIndex("by_user", (q) => q.eq("userId", authUserId as Id<"users">))
       .collect();
 
     const generatedCount = projects.filter(
-      (p) => p.status === "completed" || p.status === "rendering"
+      (p) =>
+        p.status === "completed" ||
+        p.status === "rendering" ||
+        p.status === "processing"
     ).length;
 
     const subCredits = user.subscriptionCreditsRemaining || 0;
@@ -602,12 +634,33 @@ export const redeemPromoCode = mutation({
       return { success: false, error: "Invalid promo code" };
     }
 
+    // R2: prevent the same user from redeeming the same code multiple times.
+    // Previously each call added credits + set isPremium=true with NO limit
+    // — an infinite free-credits loop.
+    const existing = await ctx.db
+      .query("promoRedemptions")
+      .withIndex("by_user_code", (q) =>
+        q.eq("userId", authUserId as Id<"users">).eq("code", args.code)
+      )
+      .first();
+    if (existing) {
+      return { success: false, error: "Promo code already redeemed" };
+    }
+
     const user = await ctx.db.get(authUserId as Id<"users">);
     const current = user?.purchasedCredits || 0;
     await ctx.db.patch(authUserId as Id<"users">, {
       purchasedCredits: current + credits,
       isPremium: true,
     });
+
+    // Record the redemption so the same code can't be reused.
+    await ctx.db.insert("promoRedemptions", {
+      userId: authUserId as Id<"users">,
+      code: args.code,
+      redeemedAt: Date.now(),
+    });
+
     return { success: true, durationDays: 30, credits };
   },
 });

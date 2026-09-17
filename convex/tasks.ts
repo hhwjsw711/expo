@@ -396,27 +396,61 @@ export const markProjectSubmitted = mutation({
       return { id, alreadySubmitted: true };
     }
 
-    // Server-side quota check
+    // ── Server-side quota check + atomic credit deduction (R2) ──────────
+    // Previously the quota check only counted "completed"/"rendering"
+    // projects, NOT "processing" — so N concurrent submissions all saw the
+    // same count and all passed (TOCTOU). Now "processing" is included,
+    // and since Convex serializes mutations, the second call sees the
+    // first's "processing" patch and is correctly rejected.
+    //
+    // Credit model:
+    //   Premium → unlimited, no deduction.
+    //   Free + credits → first 3 projects free; 4th+ costs 1 credit each,
+    //                    deducted atomically HERE (same transaction as the
+    //                    status patch, so a race can never overspend).
+    //   Free + 0 credits → max 3 projects (FREE_TIER_LIMIT_REACHED).
+    let creditCharged = false;
     if (project.userId) {
       const user = await ctx.db.get(project.userId);
       if (user) {
         const isPremium = user.isPremium || false;
-        const subCredits = user.subscriptionCreditsRemaining || 0;
-        const purchasedCredits = user.purchasedCredits || 0;
-        const totalCredits = subCredits + purchasedCredits;
 
-        if (!isPremium && totalCredits === 0) {
-          // Free tier: count completed/rendering projects
+        if (!isPremium) {
+          const subCredits = user.subscriptionCreditsRemaining || 0;
+          const purchasedCredits = user.purchasedCredits || 0;
+          const totalCredits = subCredits + purchasedCredits;
+
+          // Count ALL projects that have consumed or are consuming the
+          // paid pipeline — including "processing" to close the TOCTOU gap.
           const allProjects = await ctx.db
             .query("projects")
             .withIndex("by_user", (q) => q.eq("userId", project.userId!))
             .collect();
           const generatedCount = allProjects.filter(
-            (p) => p.status === "completed" || p.status === "rendering"
+            (p) =>
+              p.status === "completed" ||
+              p.status === "rendering" ||
+              p.status === "processing"
           ).length;
 
           if (generatedCount >= 3) {
-            throw new Error("FREE_TIER_LIMIT_REACHED");
+            // Beyond free tier — need credits
+            if (totalCredits === 0) {
+              throw new Error("FREE_TIER_LIMIT_REACHED");
+            }
+            // Deduct 1 credit: subscription credits first, then purchased.
+            // This is atomic — same mutation/transaction as the status
+            // patch below, so a concurrent submission can never double-spend.
+            if (subCredits > 0) {
+              await ctx.db.patch(project.userId, {
+                subscriptionCreditsRemaining: subCredits - 1,
+              });
+            } else {
+              await ctx.db.patch(project.userId, {
+                purchasedCredits: purchasedCredits - 1,
+              });
+            }
+            creditCharged = true;
           }
         }
       }
@@ -425,6 +459,7 @@ export const markProjectSubmitted = mutation({
     await ctx.db.patch(id, {
       submittedAt: Date.now(),
       status: "processing",
+      creditCharged,
     });
     // Server-side scheduling: no longer relies on client fire-and-forget.
     // generateMediaAssets is an internalAction (R1): previously public with
@@ -1468,6 +1503,23 @@ export const generateMediaAssets = internalAction({
       return { success: true };
     } catch (error) {
       console.error("[generate-media] error:", error instanceof Error ? error.message : "unknown error");
+
+      // R2: refund the credit if one was charged for this project.
+      // Re-fetch the project (the try block's `project` is out of scope
+      // here) and call the internal refund mutation. Best-effort: a refund
+      // failure must not mask the original error.
+      try {
+        const proj = await ctx.runQuery(internal.tasks.internalGetProject, { id: projectId });
+        if (proj?.creditCharged && proj.userId) {
+          await ctx.runMutation(internal.users.internalRefundCredit, {
+            userId: proj.userId as Id<"users">,
+          });
+          console.log("[generate-media] credit refunded for project:", projectId);
+        }
+      } catch (refundError) {
+        console.error("[generate-media] credit refund failed:", refundError);
+      }
+
       await ctx.runMutation(internal.tasks.updateProjectWithReelfulData, {
         id: projectId,
         error: error instanceof Error ? error.message : "media generation failed",

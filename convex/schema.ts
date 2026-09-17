@@ -146,6 +146,10 @@ export default defineSchema({
     includeMusic: v.optional(v.boolean()),
     includeCaptions: v.optional(v.boolean()),
     includeOriginalSound: v.optional(v.boolean()),
+    // R2: set to true when markProjectSubmitted deducts a credit for this
+    // project (beyond the free tier). generateMediaAssets checks this flag
+    // in its catch block to refund the credit on pipeline failure.
+    creditCharged: v.optional(v.boolean()),
   }).index("by_user", ["userId"]),
 
   // Timeline version history — one row per write, for audit and rollback.
@@ -198,4 +202,13 @@ export default defineSchema({
     appUserId: v.string(),
     processedAt: v.number(),
   }).index("by_eventId", ["eventId"]),
+
+  // Promo code redemptions — one row per (user, code). Prevents the same
+  // user from redeeming the same code multiple times (previously unlimited:
+  // each call added credits and set isPremium=true forever).
+  promoRedemptions: defineTable({
+    userId: v.id("users"),
+    code: v.string(),
+    redeemedAt: v.number(),
+  }).index("by_user_code", ["userId", "code"]),
 });
