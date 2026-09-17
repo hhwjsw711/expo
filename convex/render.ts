@@ -10,6 +10,55 @@ import { requireAuth } from "./auth";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
+/**
+ * Validate a timeline plan (timeline.json produced by the Claude agent).
+ * Fail fast on malformed plans instead of shipping a broken composition:
+ * - valid JSON object
+ * - non-empty segments[] with existing filenames and numeric times
+ * - summed segment durations (adjusted for playbackRate) match the declared
+ *   durationInSeconds within a small tolerance
+ */
+function validateTimelinePlan(
+  raw: string
+): { ok: true; plan: any } | { ok: false; error: string } {
+  if (!raw || raw.trim().length === 0) return { ok: false, error: "empty plan" };
+  let plan: any;
+  try {
+    plan = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "not valid JSON" };
+  }
+  if (!plan || typeof plan !== "object") return { ok: false, error: "not an object" };
+  if (!Array.isArray(plan.segments) || plan.segments.length === 0) {
+    return { ok: false, error: "segments[] is empty" };
+  }
+  const totalDuration = plan.segments.reduce(
+    (sum: number, seg: any) => sum + (Number(seg?.duration) || 0),
+    0
+  );
+  const playbackRate = Number(plan?.audio?.playbackRate) || 1;
+  const effectiveDuration = totalDuration * (playbackRate !== 0 ? 1 / playbackRate : 1);
+  const declared = Number(plan?.durationInSeconds) || 0;
+  if (declared > 0 && Math.abs(effectiveDuration - declared) > 0.75) {
+    return {
+      ok: false,
+      error: `segment durations (${effectiveDuration.toFixed(2)}s at rate ${playbackRate}) != declared ${declared.toFixed(2)}s`,
+    };
+  }
+  for (const seg of plan.segments) {
+    if (!seg?.file || typeof seg.file !== "string" || seg.file.includes("/")) {
+      return { ok: false, error: "segment is missing a plain 'file' name" };
+    }
+    if (!Number.isFinite(Number(seg.startFrom)) || !Number.isFinite(Number(seg.duration))) {
+      return { ok: false, error: `segment ${seg.file} has non-numeric startFrom/duration` };
+    }
+    if (Number(seg.duration) <= 0 || Number(seg.duration) > 10) {
+      return { ok: false, error: `segment ${seg.file} duration ${seg.duration}s out of range (0, 10]` };
+    }
+  }
+  return { ok: true, plan };
+}
+
 /** Parse composition ID from Root.tsx in sandbox. Prefers "Main". */
 async function getCompositionId(sb: Sandbox): Promise<string> {
   const rootContent = await sb.commands.run("cat /home/user/src/Root.tsx");
@@ -379,23 +428,31 @@ export const createSequence = action({
 
         console.log("[sequence] generate-composition completed");
       } else {
-        // ── Branch A: First time — run Claude agent ──
-        console.log("[sequence] no timelineJson, running claude agent...");
+        // ── Branch A: First time — run Claude agent (V2: timeline-plan-only) ──
+        // Claude outputs ONLY timeline.json (the structured edit plan).
+        // The Remotion code is then generated deterministically from that
+        // plan by generate-composition.ts — same path as user edits (Branch B).
+        console.log("[sequence] no timelineJson, running claude agent (plan-only mode)...");
         await ctx.runMutation(api.tasks.updateRenderProgress, {
           id: projectId,
           step: "claude video editing",
-          details: "claude is analyzing footage and creating composition",
+          details: "claude is analyzing footage and planning the edit",
         });
 
         const editorContext = project.prompt?.trim() || project.script?.trim() || "create an engaging social media video";
-        const videoEditorPrompt = prompts.videoEditor.generate(editorContext);
+        const videoEditorPrompt = prompts.videoEditor.generateV2(editorContext);
 
+        // V2: inject the system prompt via system-prompt.txt so we can
+        // iterate on it WITHOUT rebuilding the E2B template image.
+        // (claude-agent.ts reads this file if present; falls back to the
+        // built-in default otherwise.)
+        await sb.files.write("/home/user/system-prompt.txt", prompts.videoEditor.systemPromptV2);
         await sb.files.write("/home/user/prompt.txt", videoEditorPrompt);
 
         const claudeResult = await sb.commands.run("bun run claude-agent.ts", {
           cwd: "/home/user",
-          timeoutMs: 300000,
-          requestTimeoutMs: 300000,
+          timeoutMs: 360000,
+          requestTimeoutMs: 360000,
         });
 
         if (claudeResult.exitCode !== 0) {
@@ -404,24 +461,44 @@ export const createSequence = action({
 
         console.log("[sequence] claude completed, reading timeline.json from sandbox...");
 
-        // Read timeline.json back from sandbox and store in Convex
+        // Read + VALIDATE the plan before using it — fail fast on malformed
+        // JSON instead of shipping a broken composition.
         const timelineCheck = await sb.commands.run("test -f /home/user/timeline.json && echo exists || echo missing");
-        if (timelineCheck.stdout.trim() === "exists") {
-          const timelineContent = await sb.files.read("/home/user/timeline.json");
-          const timelineStr = typeof timelineContent === "string" ? timelineContent : new TextDecoder().decode(timelineContent);
-
-          if (timelineStr && timelineStr.trim().length > 0) {
-            console.log("[sequence] timeline.json read, length:", timelineStr.length);
-            await ctx.runMutation(api.tasks.updateProjectTimelineJson, {
-              id: projectId,
-              timelineJson: timelineStr,
-            });
-          } else {
-            console.log("[sequence] WARNING: timeline.json is empty");
-          }
-        } else {
-          console.log("[sequence] WARNING: claude did not produce timeline.json");
+        if (timelineCheck.stdout.trim() !== "exists") {
+          throw new Error("timeline.json invalid: claude did not produce timeline.json");
         }
+
+        const timelineContent = await sb.files.read("/home/user/timeline.json");
+        const timelineStr = typeof timelineContent === "string" ? timelineContent : new TextDecoder().decode(timelineContent);
+
+        const validated = validateTimelinePlan(timelineStr);
+        if (!validated.ok) {
+          throw new Error(`timeline.json invalid: ${validated.error}`);
+        }
+        console.log("[sequence] timeline plan validated:", validated.plan.segments.length, "segments,",
+          validated.plan.segments.reduce((s: number, seg: any) => s + seg.duration, 0).toFixed(2) + "s total");
+
+        // Persist the plan, then generate the composition deterministically
+        await ctx.runMutation(api.tasks.updateProjectTimelineJson, {
+          id: projectId,
+          timelineJson: timelineStr,
+        });
+
+        await ctx.runMutation(api.tasks.updateRenderProgress, {
+          id: projectId,
+          step: "generating composition from timeline",
+          details: "converting the edit plan to Remotion code",
+        });
+
+        const genResult = await sb.commands.run("bun run generate-composition.ts", {
+          cwd: "/home/user",
+          timeoutMs: 60000,
+          requestTimeoutMs: 60000,
+        });
+        if (genResult.exitCode !== 0) {
+          throw new Error(`generate-composition failed: ${genResult.stderr}`);
+        }
+        console.log("[sequence] composition generated from plan (same path as user edits)");
       }
 
       await ctx.runMutation(api.tasks.updateRenderProgress, {
@@ -449,7 +526,11 @@ export const createSequence = action({
         || errMsg.includes("ECONNREFUSED")
         || errMsg.includes("download")
         || errMsg.includes("fetch")
-        || errMsg.includes("network");
+        || errMsg.includes("network")
+        // A malformed AI plan is retryable: media is already in the sandbox,
+        // and re-running the agent is cheap. The client polling service
+        // bounds retries (SEQUENCE_MAX_RETRIES), so no infinite loop.
+        || errMsg.includes("timeline.json invalid");
 
       if (sandbox && !isTransient) {
         try { await sandbox.kill(); } catch (e) { console.log("[sequence] kill failed:", e); }
@@ -457,6 +538,15 @@ export const createSequence = action({
 
       if (isTransient) {
         console.log("[sequence] transient error, keeping sandbox alive for retry");
+        // Release the render lock: tryAcquireRenderLock treats status
+        // "rendering" as held, and without this reset a retry can never
+        // re-acquire it — the project would deadlock in "rendering" forever.
+        // Media assets are intact, so "completed" is the correct resting
+        // state (matches the assets-ready condition everywhere).
+        await ctx.runMutation(api.tasks.updateProjectStatus, {
+          id: projectId,
+          status: "completed",
+        });
         await ctx.runMutation(api.tasks.updateRenderProgress, {
           id: projectId,
           step: "retry available",

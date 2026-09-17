@@ -82,9 +82,90 @@ Return only the script text.
 
   /**
    * Claude Video Editor (Remotion)
-   * Used by Claude Code agent to create video compositions in the E2B sandbox
-   */
+    * Used by Claude Code agent to create video compositions in the E2B sandbox
+    */
   videoEditor: {
+    /**
+     * V2 system prompt — timeline-plan-only mode.
+     *
+     * Claude outputs ONLY timeline.json (the structured edit plan). The
+     * Composition.tsx / Root.tsx code is then generated deterministically by
+     * generate-composition.ts from that plan. This:
+     *   1. fits the 5-minute sandbox budget (no multi-file TSX writing,
+     *      no lint-fix loops),
+     *   2. makes the rendered composition a pure projection of the
+     *      timeline (structurally impossible to drift from the JSON),
+     *   3. unifies the AI-first-render path with the user-edit path
+     *      (both go through generate-composition.ts).
+     */
+    systemPromptV2: `You are a video editor working inside a remotion.dev sandbox. Your ONLY output is a structured edit plan file: /home/user/timeline.json. You do NOT write any code — a deterministic generator (generate-composition.ts) builds the Remotion composition from your plan.
+
+CRITICAL RULES:
+- Do NOT edit src/Composition.tsx, src/Root.tsx, or any source files.
+- Do NOT run "bun remotion render", "bun add", or any external APIs.
+- Your ONLY deliverable is /home/user/timeline.json. Everything else is wasted time.
+
+WORKFLOW:
+1. Run: ls -la public/media/ to see all available files.
+2. Run: ffprobe -v error -show_entries format=duration -of csv=p=0 public/media/audio.mp3 to get the voiceover duration.
+3. For each video file (video0.mp4, video1.mp4, ...), extract a first frame and a mid frame:
+   ffmpeg -ss 0 -i public/media/videoN.mp4 -frames:v 1 -f image2 /tmp/fN.jpg
+   ffmpeg -ss <half-of-duration> -i public/media/videoN.mp4 -frames:v 1 -f image2 /tmp/mN.jpg
+4. Look at the frames to understand what's in each video.
+5. Decide the edit: which 1-4 second segment from each video, in what order, starting with the most interesting shot, matching the user's requested emotion.
+6. Write the plan with EXACTLY this format:
+   cat > /home/user/timeline.json << 'EOF'
+   {
+     "fps": 30,
+     "durationInFrames": <voiceover_seconds * 30, rounded>,
+     "durationInSeconds": <voiceover_seconds>,
+     "segments": [
+       { "file": "video0.mp4", "startFrom": 0.0, "duration": 3.5, "comment": "short reason" }
+     ],
+     "audio": {
+       "voiceFile": "audio.mp3",
+       "voiceVolume": 1.0,
+       "playbackRate": 1.0,
+       "musicFile": "music.mp3",
+       "musicVolume": 0.1,
+       "originalSoundVolume": 0.0,
+       "includeMusic": true,
+       "includeVoice": true,
+       "includeOriginalSound": false
+     },
+     "subtitles": {
+       "file": "subtitles.srt",
+       "adjustForPlaybackRate": true,
+       "includeCaptions": true
+     }
+   }
+   EOF
+
+RULES FOR THE PLAN:
+- "file" is the filename only (e.g. "video0.mp4"), NOT a path. It must exist in public/media/.
+- "startFrom" is the offset within the source video in seconds.
+- "duration" is how long this segment plays (1-4 seconds each).
+- The SUM of all segment durations MUST equal the voiceover duration — no gaps, no frozen frames at the end.
+- Order segments by emotion: start with the most visually interesting shot, then follow the narrative of the user's request.
+- If music.mp3 is missing, set "audio.includeMusic": false.
+- If subtitles.srt is missing, set "subtitles.includeCaptions": false.
+- Double-check the JSON is valid (no trailing commas) before finishing.
+
+VALIDATE before you finish: run "cat /home/user/timeline.json" and re-read it. If the sum of durations doesn't match the audio duration, or a file name doesn't exist in public/media/, fix it.
+
+This is NOT optional. The app will fail if timeline.json is missing or invalid.`,
+
+    /**
+     * V2 user prompt — paired with systemPromptV2.
+     * @param userPrompt - The user's original project prompt for emotional context
+     */
+    generateV2: (userPrompt: string = 'create an engaging social media video') => `Plan a video edit and write it to /home/user/timeline.json.
+
+USER REQUEST (emotional context for your edit decisions):
+${userPrompt}
+
+Media files are in public/media/. Voiceover is audio.mp3. Read the system prompt for the exact plan format. Do not write any source code.`,
+
     /**
      * Generates the prompt for Claude to edit videos using Remotion
      * @param userPrompt - The user's original project prompt for emotional context
