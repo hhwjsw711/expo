@@ -171,15 +171,12 @@ export const backdoorLogin = mutation({
     password: v.string(),
   },
   handler: async (ctx, args) => {
-    // R2: hard production block — even if DISABLE_BACKDOOR is not set, the
-    // backdoor must never be reachable in production. Belt-and-suspenders
-    // alongside the existing DISABLE_BACKDOOR env var check.
-    if (process.env.NODE_ENV === "production") {
-      throw new Error("Backdoor login is not available in production");
-    }
-
-    // Dev-only shortcut. Password MUST be set via BACKDOOR_PASSWORD env var;
-    // no hardcoded default. Unset -> login is always rejected.
+    // R2 regression fix: Convex sets NODE_ENV="production" on ALL deployments
+    // (dev included) — the NODE_ENV hard block rejected dev backdoor logins
+    // too. Removed. The two existing fail-closed gates are the real guard:
+    //   1. BACKDOOR_PASSWORD must be set (unset → always rejected)
+    //   2. DISABLE_BACKDOOR=true kills it outright
+    // Production deploy checklist MUST set DISABLE_BACKDOOR=true.
     const backdoorPassword = process.env.BACKDOOR_PASSWORD;
 
     // Reject backdoor login if explicitly disabled
@@ -228,12 +225,9 @@ export const backdoorLogin = mutation({
 export const testAccountLogin = mutation({
   args: {},
   handler: async (ctx) => {
-    // R2: hard production block — test account login must never be reachable
-    // in production, regardless of ENABLE_TEST_ACCOUNT env var.
-    if (process.env.NODE_ENV === "production") {
-      throw new Error("Test account login is not available in production");
-    }
-
+    // R2 regression fix: removed the NODE_ENV hard block (Convex sets it to
+    // "production" on dev deployments too). The fail-closed gate here is
+    // ENABLE_TEST_ACCOUNT, which must be explicitly set to "true".
     if (process.env.ENABLE_TEST_ACCOUNT !== "true") {
       throw new Error("Test account login is disabled");
     }
