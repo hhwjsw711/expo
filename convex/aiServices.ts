@@ -3,7 +3,7 @@
 import { action } from "./_generated/server";
 import { v } from "convex/values";
 import { fal } from "@fal-ai/client";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import { prompts } from "./prompts";
 import type { Id } from "./_generated/dataModel";
 import { requireAuth } from "./auth";
@@ -311,7 +311,9 @@ export const generateVoiceover = action({
       }
 
       // Upload audio to Convex storage
-      const uploadUrl = await ctx.runMutation(api.tasks.generateUploadUrl, {});
+      // NOTE: this action is also called from scheduler-triggered jobs (no
+      // user JWT), so use the internal upload URL mutation here.
+      const uploadUrl = await ctx.runMutation(internal.tasks.internalGenerateUploadUrl, {});
       const uploadResponse = await fetch(uploadUrl, {
         method: "POST",
         headers: { "Content-Type": "audio/mp3" },
@@ -386,7 +388,8 @@ export const generateMusic = action({
       const musicDurationMs = result.extra_info?.music_duration || 0;
       console.log("[music] music generated, size:", audioBuffer.length, "duration:", musicDurationMs, "ms");
 
-      const uploadUrl = await ctx.runMutation(api.tasks.generateUploadUrl, {});
+      // NOTE: scheduler-triggered path has no user JWT — use internal variant
+      const uploadUrl = await ctx.runMutation(internal.tasks.internalGenerateUploadUrl, {});
       const uploadResponse = await fetch(uploadUrl, {
         method: "POST",
         headers: { "Content-Type": "audio/mp3" },

@@ -182,8 +182,37 @@ export const [AppProvider, useApp] = createContextHook(() => {
           thumbnailUrl: project.thumbnailUrl, // Include thumbnail URL even for failed videos
         }));
 
+      // Add completed-without-render projects whose media assets are all ready
+      // (voiceover + animated clips exist, waiting for createSequence).
+      // Without this branch such projects fall through every filter above,
+      // disappear from the feed, and the polling service never triggers
+      // sequence creation — the pipeline deadlocks at "assets ready".
+      // Note: projects with status 'completed' but NO media assets are
+      // script-ready drafts (user hasn't tapped Generate yet) — those are
+      // owned by the chat flow and must NOT be listed as processing here.
+      const sequencePendingVideos: Video[] = backendProjects
+        .filter(project =>
+          project.status === 'completed' &&
+          !project.renderedVideoUrl &&
+          !project.sandboxId &&
+          !project.timelineJson &&
+          project.audioUrl &&
+          project.videoUrls && project.videoUrls.length > 0
+        )
+        .map(project => ({
+          id: project._id,
+          uri: '',
+          prompt: project.prompt,
+          name: project.name, // AI-generated project name
+          script: transformScript(project.script),
+          createdAt: project.createdAt,
+          status: 'processing' as const,
+          projectId: project._id,
+          thumbnailUrl: project.thumbnailUrl,
+        }));
+
       // Filter out recently deleted videos to prevent them from reappearing during sync
-      const backendVideoList = [...backendVideos, ...draftVideos, ...processingVideos, ...failedVideos]
+      const backendVideoList = [...backendVideos, ...draftVideos, ...processingVideos, ...sequencePendingVideos, ...failedVideos]
         .filter(v => !recentlyDeletedIds.has(v.id));
       
       // Merge with existing local videos (in case there are any new ones not in backend yet)

@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query, internalMutation, action } from "./_generated/server";
+import { mutation, query, internalQuery, internalMutation, action } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { signUserJWT, requireAuth } from "./auth";
@@ -200,6 +200,22 @@ export const getCurrentUser = query({
     }
     const authUserId = await requireAuth(ctx);
     return await ctx.db.get(authUserId as Id<"users">);
+  },
+});
+
+// ─── Internal: Voice Settings for Server Jobs ────────────────────────────────
+// Scheduled actions (ctx.scheduler.runAfter) run without a user JWT, so they
+// must not call requireAuth-based functions like getCurrentUser. This
+// internal query is only callable from server code and reads voice settings
+// directly by userId.
+export const internalGetVoiceSettings = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, { userId }) => {
+    const user = await ctx.db.get(userId);
+    return {
+      selectedVoiceId: user?.selectedVoiceId ?? undefined,
+      preferredStyle: user?.preferredStyle ?? undefined,
+    };
   },
 });
 

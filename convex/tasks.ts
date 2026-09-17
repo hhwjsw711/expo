@@ -1,6 +1,6 @@
-import { query, mutation, action } from "./_generated/server";
+import { query, mutation, action, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { prompts } from "./prompts";
 import { requireAuth, requireProjectOwnership } from "./auth";
@@ -15,6 +15,15 @@ export const generateUploadUrl = mutation({
   args: {},
   handler: async (ctx) => {
     await requireAuth(ctx);
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+// Internal variant for server-side jobs (scheduler-triggered actions have no
+// user JWT, so they cannot call the requireAuth-based generateUploadUrl).
+export const internalGenerateUploadUrl = internalMutation({
+  args: {},
+  handler: async (ctx) => {
     return await ctx.storage.generateUploadUrl();
   },
 });
@@ -1040,11 +1049,15 @@ export const generateMediaAssets = action({
       });
 
       console.log("[generate-media] step 1: generating voiceover");
-      // Get user's custom voice ID and preferred style if available
+      // Get user's custom voice ID and preferred style if available.
+      // NOTE: this action is scheduler-triggered (no user JWT), so we must use
+      // the internal query instead of the requireAuth-based getCurrentUser.
       let voiceId: string | undefined;
       let style = "professional"; // default
       if (project.userId) {
-        const user = await ctx.runQuery(api.users.getCurrentUser, { userId: project.userId });
+        const user = await ctx.runQuery(internal.users.internalGetVoiceSettings, {
+          userId: project.userId as Id<"users">,
+        });
         // Use selected voice if available, otherwise fall back to custom voice
         if (user?.selectedVoiceId) {
           voiceId = user.selectedVoiceId;
