@@ -978,8 +978,11 @@ export const saveEditorChanges = mutation({
     timelineJson: v.string(),
     assContent: v.optional(v.string()),
     baseRevision: v.number(),
+    // The op stream from the editor's opLog (batch 3b). Optional only to keep
+    // the call site upgrade flexible; the editor always sends it.
+    operationsJson: v.optional(v.string()),
   },
-  handler: async (ctx, { projectId, timelineJson, assContent, baseRevision }): Promise<{ success: boolean; newProjectId?: Id<"projects">; conflict?: boolean; currentRevision?: number; error?: string }> => {
+  handler: async (ctx, { projectId, timelineJson, assContent, baseRevision, operationsJson }): Promise<{ success: boolean; newProjectId?: Id<"projects">; revision?: number; conflict?: boolean; currentRevision?: number; error?: string }> => {
     await requireProjectOwnership(ctx, projectId);
     try {
       const original = await ctx.db.get(projectId);
@@ -1042,7 +1045,34 @@ export const saveEditorChanges = mutation({
         renderError: undefined,
       });
 
-      return { success: true, newProjectId };
+      // 3. Persist the edit manifest (op stream) for this revision.
+      //    Keyed by (projectId, nextRevision) so the lineage is queryable.
+      if (operationsJson) {
+        try {
+          const parsed = JSON.parse(operationsJson);
+          if (Array.isArray(parsed)) {
+            const existing = await ctx.db
+              .query("editManifests")
+              .withIndex("by_project_revision", (q) => q.eq("projectId", projectId).eq("revision", check.nextRevision))
+              .first();
+            if (existing) {
+              await ctx.db.patch(existing._id, { operationsJson, opCount: parsed.length, createdAt: Date.now() });
+            } else {
+              await ctx.db.insert("editManifests", {
+                projectId,
+                revision: check.nextRevision,
+                operationsJson,
+                opCount: parsed.length,
+                createdAt: Date.now(),
+              });
+            }
+          }
+        } catch {
+          // manifest is best-effort audit; don't fail the save over a bad op log
+        }
+      }
+
+      return { success: true, newProjectId, revision: check.nextRevision };
     } catch (error) {
       return {
         success: false,
@@ -1051,6 +1081,124 @@ export const saveEditorChanges = mutation({
     }
   },
 });
+
+// ─── Edit Manifest (batch 3b) ──────────────────────────────────────────────
+// The manifest is the auditable op stream that produced a timeline revision.
+// The editor sends its opLog (batch 2b) alongside the save; we persist it
+// keyed by (projectId, revision) so the lineage is queryable later — for
+// the "Editing History" side panel, and as raw material for rollback
+// (replay ops from revision 0 to reconstruct any intermediate document).
+
+export const saveEditManifest = mutation({
+  args: {
+    projectId: v.id("projects"),
+    revision: v.number(),
+    operationsJson: v.string(),
+  },
+  handler: async (ctx, { projectId, revision, operationsJson }): Promise<{ success: boolean; error?: string }> => {
+    await requireProjectOwnership(ctx, projectId);
+    try {
+      // Validate it's a non-empty JSON array (don't parse the whole thing —
+      // it can be large; a structural check is enough).
+      const parsed = JSON.parse(operationsJson);
+      if (!Array.isArray(parsed)) {
+        return { success: false, error: "operationsJson must be a JSON array" };
+      }
+      // Upsert: if a manifest already exists for this (projectId, revision),
+      // overwrite it — the editor may re-save with additional ops before the
+      // next revision bump.
+      const existing = await ctx.db
+        .query("editManifests")
+        .withIndex("by_project_revision", (q) => q.eq("projectId", projectId).eq("revision", revision))
+        .first();
+      const opCount = parsed.length;
+      if (existing) {
+        await ctx.db.patch(existing._id, { operationsJson, opCount, createdAt: Date.now() });
+      } else {
+        await ctx.db.insert("editManifests", {
+          projectId,
+          revision,
+          operationsJson,
+          opCount,
+          createdAt: Date.now(),
+        });
+      }
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Failed to save manifest" };
+    }
+  },
+});
+
+// Read the manifest for a specific revision (or the latest if revision is
+// omitted). Returns the op stream and a human-readable summary per op.
+export const getEditManifest = query({
+  args: {
+    projectId: v.id("projects"),
+    revision: v.optional(v.number()),
+  },
+  handler: async (ctx, { projectId, revision }): Promise<{
+    revision: number;
+    opCount: number;
+    operations: Array<{ type: string; summary: string }>;
+    createdAt: number;
+  } | null> => {
+    await requireProjectOwnership(ctx, projectId);
+    let row;
+    if (revision !== undefined) {
+      row = await ctx.db
+        .query("editManifests")
+        .withIndex("by_project_revision", (q) => q.eq("projectId", projectId).eq("revision", revision))
+        .first();
+    } else {
+      row = await ctx.db
+        .query("editManifests")
+        .withIndex("by_project_revision", (q) => q.eq("projectId", projectId))
+        .order("desc")
+        .first();
+    }
+    if (!row) return null;
+    try {
+      const ops = JSON.parse(row.operationsJson) as any[];
+      return {
+        revision: row.revision,
+        opCount: row.opCount,
+        operations: ops.map(summarizeOp),
+        createdAt: row.createdAt,
+      };
+    } catch {
+      return { revision: row.revision, opCount: row.opCount, operations: [], createdAt: row.createdAt };
+    }
+  },
+});
+
+/** Human-readable one-liner for an op, for the history side panel. */
+function summarizeOp(op: any): { type: string; summary: string } {
+  switch (op?.type) {
+    case "trimSegment":
+      return { type: op.type, summary: `trim seg #${op.index} → start ${op.startFrom ?? "?"}, dur ${op.duration ?? "?"}` };
+    case "moveSegment":
+      return { type: op.type, summary: `move seg #${op.from} → #${op.to}` };
+    case "splitSegment":
+      return { type: op.type, summary: `split seg #${op.index} at ${op.at}s` };
+    case "removeSegment":
+      return { type: op.type, summary: `remove seg #${op.index}` };
+    case "insertSegment":
+      return { type: op.type, summary: `insert "${op.segment?.file ?? "?"}" at #${op.index}` };
+    case "replaceSegmentFile":
+      return { type: op.type, summary: `replace seg #${op.index} → ${op.file}` };
+    case "adjustAudio": {
+      const keys = Object.keys(op.patch ?? {}).join(", ");
+      return { type: op.type, summary: `audio: ${keys}` };
+    }
+    case "adjustSubtitles": {
+      const keys = Object.keys(op.patch ?? {}).join(", ");
+      return { type: op.type, summary: `subtitles: ${keys}` };
+    }
+    default:
+      return { type: String(op?.type ?? "unknown"), summary: JSON.stringify(op).slice(0, 80) };
+  }
+}
 
 // ─── Generate Script Only ───────────────────────────────────────────────────
 export const generateScriptOnly = action({

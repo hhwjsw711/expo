@@ -1229,7 +1229,11 @@ export default function VideoEditorScreen() {
       if (originalAssContent && captions.length > 0) {
         assContent = rebuildAssContent(originalAssContent, captions);
       }
-      const result = await saveEditorChanges({ projectId, timelineJson, assContent, baseRevision: baseRevisionRef.current });
+      const result = await saveEditorChanges({
+        projectId, timelineJson, assContent,
+        baseRevision: baseRevisionRef.current,
+        operationsJson: JSON.stringify(opLogRef.current),
+      });
 
       if (result?.conflict) {
         // Optimistic-lock rejection: the project was changed elsewhere while

@@ -152,6 +152,22 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_project", ["projectId", "revision"]),
 
+  // Edit manifest — the operation stream that produced a timeline revision.
+  // One row per revision that had a client-visible op sequence (user edits).
+  // AI plans (source 'ai') and system rebuilds don't write here: they have
+  // no op stream, only a single terminal 'plan' op. The manifest is the
+  // auditable record (batch 3b) and the raw material for future rollback
+  // (replay ops from revision N to reconstruct the document at N).
+  editManifests: defineTable({
+    projectId: v.id("projects"),
+    revision: v.number(),
+    // Serialized TimelineOperation[] from the editor's opLog. JSON string
+    // keeps the schema simple and the payload flexible as ops evolve.
+    operationsJson: v.string(),
+    opCount: v.number(),
+    createdAt: v.number(),
+  }).index("by_project_revision", ["projectId", "revision"]),
+
   chatMessages: defineTable({
     projectId: v.id("projects"),
     role: v.string(),
