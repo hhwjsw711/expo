@@ -14,12 +14,15 @@ import { requireAuth } from "./auth";
  * Validate a timeline plan (timeline.json produced by the Claude agent).
  * Fail fast on malformed plans instead of shipping a broken composition:
  * - valid JSON object
- * - non-empty segments[] with existing filenames and numeric times
- * - summed segment durations (adjusted for playbackRate) match the declared
- *   durationInSeconds within a small tolerance
+ * - non-empty segments[] with numeric times
+ * - every segment file exists in the sandbox media directory
+ * - summed segment durations match the declared durationInSeconds within
+ *   a small tolerance (playbackRate only speeds up the voice track and does
+ *   NOT change on-screen segment time, so no adjustment is applied)
  */
 function validateTimelinePlan(
-  raw: string
+  raw: string,
+  availableFiles?: string[]
 ): { ok: true; plan: any } | { ok: false; error: string } {
   if (!raw || raw.trim().length === 0) return { ok: false, error: "empty plan" };
   let plan: any;
@@ -32,22 +35,31 @@ function validateTimelinePlan(
   if (!Array.isArray(plan.segments) || plan.segments.length === 0) {
     return { ok: false, error: "segments[] is empty" };
   }
+  // Segments play back-to-back and fill the whole composition, so their sum
+  // must match the declared duration. playbackRate only affects how fast the
+  // voiceover audio plays (audio ends early if > 1), not the screen time.
   const totalDuration = plan.segments.reduce(
     (sum: number, seg: any) => sum + (Number(seg?.duration) || 0),
     0
   );
-  const playbackRate = Number(plan?.audio?.playbackRate) || 1;
-  const effectiveDuration = totalDuration * (playbackRate !== 0 ? 1 / playbackRate : 1);
   const declared = Number(plan?.durationInSeconds) || 0;
-  if (declared > 0 && Math.abs(effectiveDuration - declared) > 0.75) {
+  if (declared > 0 && Math.abs(totalDuration - declared) > 0.75) {
     return {
       ok: false,
-      error: `segment durations (${effectiveDuration.toFixed(2)}s at rate ${playbackRate}) != declared ${declared.toFixed(2)}s`,
+      error: `segment durations (${totalDuration.toFixed(2)}s) != declared ${declared.toFixed(2)}s`,
     };
   }
   for (const seg of plan.segments) {
     if (!seg?.file || typeof seg.file !== "string" || seg.file.includes("/")) {
       return { ok: false, error: "segment is missing a plain 'file' name" };
+    }
+    // Cross-check against the real sandbox directory: referencing a file
+    // that was never downloaded would render a black screen.
+    if (availableFiles && availableFiles.length > 0 && !availableFiles.includes(seg.file)) {
+      return {
+        ok: false,
+        error: `segment file "${seg.file}" not found in public/media (available: ${availableFiles.join(", ")})`,
+      };
     }
     if (!Number.isFinite(Number(seg.startFrom)) || !Number.isFinite(Number(seg.duration))) {
       return { ok: false, error: `segment ${seg.file} has non-numeric startFrom/duration` };
@@ -471,7 +483,16 @@ export const createSequence = action({
         const timelineContent = await sb.files.read("/home/user/timeline.json");
         const timelineStr = typeof timelineContent === "string" ? timelineContent : new TextDecoder().decode(timelineContent);
 
-        const validated = validateTimelinePlan(timelineStr);
+        // List what actually exists in the media dir so validation can
+        // cross-check every segment reference (fails fast on files the
+        // agent hallucinated that were never downloaded).
+        const lsResult = await sb.commands.run("ls /home/user/public/media");
+        const mediaFiles = lsResult.stdout
+          .split("\n")
+          .map((l: string) => l.trim())
+          .filter(Boolean);
+
+        const validated = validateTimelinePlan(timelineStr, mediaFiles);
         if (!validated.ok) {
           throw new Error(`timeline.json invalid: ${validated.error}`);
         }

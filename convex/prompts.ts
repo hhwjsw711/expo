@@ -108,7 +108,9 @@ CRITICAL RULES:
 WORKFLOW:
 1. Run: ls -la public/media/ to see all available files.
 2. Run: ffprobe -v error -show_entries format=duration -of csv=p=0 public/media/audio.mp3 to get the voiceover duration.
-3. For each video file (video0.mp4, video1.mp4, ...), extract a first frame and a mid frame:
+3. For each video file (video0.mp4, video1.mp4, ...), first get its duration:
+   ffprobe -v error -show_entries format=duration -of csv=p=0 public/media/videoN.mp4
+   Then extract a first frame and a mid frame (mid = half of that duration):
    ffmpeg -ss 0 -i public/media/videoN.mp4 -frames:v 1 -f image2 /tmp/fN.jpg
    ffmpeg -ss <half-of-duration> -i public/media/videoN.mp4 -frames:v 1 -f image2 /tmp/mN.jpg
 4. Look at the frames to understand what's in each video.

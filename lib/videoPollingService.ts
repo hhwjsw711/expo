@@ -176,34 +176,13 @@ export function useVideoPolling() {
                 console.warn('[VideoPolling] Sequence error:', error);
               });
           }
-          // Priority 3b: Sandbox exists but video not rendered — keep as processing
-          // (previously auto-resumed renderFinalVideo; now user must tap Render in video-preview)
-          else if (
-            project.status === 'rendering' &&
-            project.sandboxId &&
-            !project.renderedVideoUrl
-          ) {
-            // If timelineJson exists, sequence is ready for preview/render — show as ready
-            if (project.timelineJson) {
-              if (video.status !== 'ready') {
-                console.log('[VideoPolling] ✅ Sequence ready for preview:', video.id);
-                updateVideoStatus(video.id, 'ready', undefined, undefined, project.thumbnailUrl);
-                anyStateChanged = true;
-              }
-            } else {
-              // Sequence still being created (Claude editing etc.)
-              if (video.status === 'pending' || video.status === 'failed') {
-                console.log('[VideoPolling] ⏳ Sequence being created, waiting for user to render:', video.id);
-                updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl);
-                anyStateChanged = true;
-              }
-            }
-          }
-          // Priority 3c: A transient timeout left a live sandbox with
+          // Priority 3b-RETRY: A transient timeout left a live sandbox with
           // "retry available" — nothing else consumes this state, so
           // re-trigger createSequence here (it reuses the existing sandbox).
           // render.ts releases the lock on transient errors (status back to
-          // "completed"), but tolerate legacy rows stuck in "rendering".
+          // "completed"), but this branch also tolerates legacy rows stuck
+          // in "rendering" (pre-fix data). MUST be evaluated BEFORE 3b —
+          // 3b matches any rendering+sandbox row and would swallow this.
           // Bounded by SEQUENCE_MAX_RETRIES to avoid retry loops.
           else if (
             (project.status === 'completed' || project.status === 'rendering') &&
@@ -233,6 +212,29 @@ export function useVideoPolling() {
                 });
             } else {
               console.log('[VideoPolling] ⏳ Retry budget exhausted for:', video.id);
+            }
+          }
+          // Priority 3b: Sandbox exists but video not rendered — keep as processing
+          // (previously auto-resumed renderFinalVideo; now user must tap Render in video-preview)
+          else if (
+            project.status === 'rendering' &&
+            project.sandboxId &&
+            !project.renderedVideoUrl
+          ) {
+            // If timelineJson exists, sequence is ready for preview/render — show as ready
+            if (project.timelineJson) {
+              if (video.status !== 'ready') {
+                console.log('[VideoPolling] ✅ Sequence ready for preview:', video.id);
+                updateVideoStatus(video.id, 'ready', undefined, undefined, project.thumbnailUrl);
+                anyStateChanged = true;
+              }
+            } else {
+              // Sequence still being created (Claude editing etc.)
+              if (video.status === 'pending' || video.status === 'failed') {
+                console.log('[VideoPolling] ⏳ Sequence being created, waiting for user to render:', video.id);
+                updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl);
+                anyStateChanged = true;
+              }
             }
           }
           // Priority 4: Show processing for any intermediate states OR if completed but still rendering
