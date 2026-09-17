@@ -1,5 +1,6 @@
 import { useRouter } from 'expo-router';
 import { useEffect, useState, useRef } from 'react';
+import { useQuery } from 'convex/react';
 import {
   StyleSheet,
   TouchableOpacity,
@@ -14,6 +15,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
 import { useApp } from '@/contexts/AppContext';
+import { api } from '@/convex/_generated/api';
 import { Fonts } from '@/constants/typography';
 import { ENABLE_TEST_RUN_MODE } from '@/constants/config';
 import { getScreenDimensions } from '@/lib/dimensions';
@@ -31,6 +33,13 @@ export default function IntroScreen() {
   const { userId, isLoading } = useApp();
   const [hasNavigated, setHasNavigated] = useState(false);
   const [showButtons, setShowButtons] = useState(false);
+
+  // JWT-restored sessions skip the auth-page onboarding check, so verify the
+  // user document here before routing to the feed.
+  const currentUser = useQuery(
+    api.users.getCurrentUser,
+    userId ? { userId } : 'skip'
+  );
 
   // Dynamic reel size based on login state
   const isLoggedIn = !!userId;
@@ -86,6 +95,8 @@ export default function IntroScreen() {
     if (userId) {
       if (ENABLE_TEST_RUN_MODE) {
         router.replace('/onboarding');
+      } else if (currentUser && !currentUser.onboardingCompleted) {
+        router.replace('/onboarding');
       } else {
         router.replace('/(tabs)');
       }
@@ -105,7 +116,10 @@ export default function IntroScreen() {
         // Navigation will happen via handleScreenTap
         return;
       } else {
-        // Normal mode: show intro for 2 seconds then go to feed
+        // Wait until the user document resolves so we know whether
+        // onboarding was completed before choosing a destination.
+        if (currentUser === undefined) return;
+        // Normal mode: show intro for 2 seconds then go to feed/onboarding
         const timer = setTimeout(() => {
           navigateToNextScreen();
         }, 2000);
@@ -123,7 +137,7 @@ export default function IntroScreen() {
       }, 1500);
       return () => clearTimeout(timer);
     }
-  }, [fadeAnim, userId, isLoading]);
+  }, [fadeAnim, userId, isLoading, currentUser]);
 
   // Handle tap on screen (for test mode when logged in)
   const handleScreenTap = () => {
