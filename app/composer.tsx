@@ -151,7 +151,7 @@ function ComposerScreen() {
       // Convert project file URLs to media URIs format
       if (existingProject.fileUrls && existingProject.fileMetadata) {
         const mediaFromProject = existingProject.fileUrls
-          .map((url: string | null, index: number) => {
+          .map((url: string | null, index: number): typeof mediaUris[0] | null => {
             if (!url) return null;
             const metadata = existingProject.fileMetadata?.[index];
             const isVideo = metadata?.contentType?.startsWith('video/') ?? false;
@@ -163,9 +163,9 @@ function ComposerScreen() {
               uploadedUrl: url, // Already has URL
             };
           })
-          .filter((item: any): item is typeof mediaUris[0] => item !== null);
-        
-        setMediaUris(mediaFromProject as any);
+          .filter((item): item is typeof mediaUris[0] => item !== null);
+
+        setMediaUris(mediaFromProject);
         console.log('[composer] Loaded', mediaFromProject.length, 'media files from draft');
         
         // If we have media, go straight to description step

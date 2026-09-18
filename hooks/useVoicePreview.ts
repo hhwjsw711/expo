@@ -27,10 +27,10 @@ export function useVoicePreview() {
   }, [cachedSounds]);
 
   const cleanupPlayer = useCallback((player: AudioPlayer | null) => {
+    if (!player) return;
     try {
-      // SDK 58: removeAllListeners may not exist on AudioPlayer; use safe cast
-      (player as any)?.removeAllListeners?.();
-      (player as any)?.remove?.();
+      player.removeAllListeners('playbackStatusUpdate');
+      player.remove();
     } catch (e) {
       console.error('Error cleaning up player:', e);
     }
@@ -92,8 +92,6 @@ export function useVoicePreview() {
             cachedPlayer.seekTo(0);
           }
         });
-        // Store listener reference for cleanup
-        (cachedPlayer as any)._statusListener = listener;
       } else {
         const newPlayer = createAudioPlayer({ uri: previewUrl });
 
@@ -106,7 +104,6 @@ export function useVoicePreview() {
             newPlayer.seekTo(0);
           }
         });
-        (newPlayer as any)._statusListener = listener;
 
         newPlayer.play();
       }

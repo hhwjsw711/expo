@@ -92,7 +92,12 @@ interface PendingMedia {
   id: string;
   assetId?: string;
   uploadStatus: 'pending' | 'uploading' | 'uploaded' | 'failed';
-  storageId?: any;
+  storageId?: Id<"_storage">;
+}
+
+// Type guard: narrows PendingMedia to those with a confirmed storageId
+function hasStorageId(m: PendingMedia): m is PendingMedia & { storageId: Id<"_storage"> } {
+  return !!m.storageId;
 }
 
 // Guard against web where Directory/Paths is not supported
@@ -493,7 +498,7 @@ function ScriptEditor({
 export default function ChatComposerScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ projectId?: string; fromVideo?: string }>();
-  const projectId = params.projectId as any;
+  const projectId = params.projectId as Id<"projects"> | undefined;
   const fromVideo = params.fromVideo === 'true';
   const insets = useSafeAreaInsets();
   const { user, userId, addVideo } = useApp();
@@ -515,7 +520,7 @@ export default function ChatComposerScreen() {
   const [showEditor, setShowEditor] = useState(false);
   const [editingScript, setEditingScript] = useState('');
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-  const [createdProjectId, setCreatedProjectId] = useState<string | null>(projectId || null);
+  const [createdProjectId, setCreatedProjectId] = useState<Id<"projects"> | null>(projectId ?? null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [isProcessingMedia, setIsProcessingMedia] = useState(false);
@@ -525,7 +530,7 @@ export default function ChatComposerScreen() {
   
   // Track if we've forked from a completed video project
   const [hasForkedFromVideo, setHasForkedFromVideo] = useState(false);
-  const [originalVideoProjectId] = useState<string | null>(fromVideo ? projectId : null);
+  const [originalVideoProjectId] = useState<Id<"projects"> | null>(fromVideo ? (projectId ?? null) : null);
   const [isForking, setIsForking] = useState(false);
   
   // Voice preview state
@@ -587,7 +592,7 @@ export default function ChatComposerScreen() {
     userInput: string;
     isNewMedia: boolean;
     newMediaCount: number;
-    newMediaIds: string[];
+    newMediaIds: Id<"_storage">[];
     userMessagePersisted: boolean;
   } | null>(null);
   
@@ -628,17 +633,17 @@ export default function ChatComposerScreen() {
   // Fetch current project data (tracks newly created/forked chat projects too)
   const existingProject = useQuery(
     api.tasks.getProject,
-    createdProjectId ? { id: createdProjectId as any } : "skip"
+    createdProjectId ? { id: createdProjectId } : "skip"
   );
   
   // Fetch existing chat messages
   const existingMessages = useQuery(
     api.tasks.getChatMessages,
-    createdProjectId ? { projectId: createdProjectId as any } : "skip"
+    createdProjectId ? { projectId: createdProjectId } : "skip"
   );
   
   // Helper: Fork the project if coming from a completed video (never modify original)
-  const forkProjectIfNeeded = async (): Promise<string | null> => {
+  const forkProjectIfNeeded = async (): Promise<Id<"projects"> | null> => {
     // Only fork if we came from a video and haven't forked yet
     if (!fromVideo || hasForkedFromVideo || !originalVideoProjectId) {
       return createdProjectId;
@@ -648,7 +653,7 @@ export default function ChatComposerScreen() {
     try {
       console.log('[chat-composer] Forking project from completed video:', originalVideoProjectId);
       const newProjectId = await forkChatProject({
-        sourceProjectId: originalVideoProjectId as any,
+        sourceProjectId: originalVideoProjectId,
       });
       
       console.log('[chat-composer] Forked to new project:', newProjectId);
@@ -670,7 +675,7 @@ export default function ChatComposerScreen() {
       // Load media from project
       if (existingProject.fileUrls && existingProject.fileMetadata) {
         const mediaFromProject = existingProject.fileUrls
-          .map((url: string | null, index: number) => {
+          .map((url: string | null, index: number): PendingMedia | null => {
             if (!url) return null;
             const metadata = existingProject.fileMetadata?.[index];
             const isVideo = metadata?.contentType?.startsWith('video/') ?? false;
@@ -682,9 +687,9 @@ export default function ChatComposerScreen() {
               uploadStatus: 'uploaded' as const,
             };
           })
-          .filter((item: any): item is typeof mediaUris[0] => item !== null);
-        
-        setMediaUris(mediaFromProject as any);
+          .filter((item): item is PendingMedia => item !== null);
+
+        setMediaUris(mediaFromProject);
       }
       
       // Sync voice speed from project (so UI reflects the actual configured speed)
@@ -1189,7 +1194,7 @@ export default function ChatComposerScreen() {
     }
 
     // Get pending media (uploaded but not yet sent in a message)
-    const pendingMedia = mediaUris.filter(m => m.storageId && !sentMediaIds.has(m.id));
+    const pendingMedia = mediaUris.filter(hasStorageId).filter(m => !sentMediaIds.has(m.id));
     const hasPendingMedia = pendingMedia.length > 0;
     
     // Check message limit
@@ -1248,17 +1253,17 @@ export default function ChatComposerScreen() {
     
     // Get new media IDs for generateScript
     const newMediaIds = hasPendingMedia 
-      ? pendingMedia.map(m => m.storageId).filter((id): id is string => !!id)
+      ? pendingMedia.map(m => m.storageId)
       : [];
     
     await generateScript(inputText.trim(), hasPendingMedia, pendingMedia.length, newMediaIds);
   };
   
-  const generateScript = async (userInput: string, isNewMedia = false, newMediaCount = 0, newMediaIds: string[] = [], isRetry = false) => {
+  const generateScript = async (userInput: string, isNewMedia = false, newMediaCount = 0, newMediaIds: Id<"_storage">[] = [], isRetry = false) => {
     if (!isMountedRef.current) return;
     lastGenerateArgsRef.current = { userInput, isNewMedia, newMediaCount, newMediaIds, userMessagePersisted: false };
     setIsGenerating(true);
-    let requestProjectId: string | null = createdProjectId;
+    let requestProjectId: Id<"projects"> | null = createdProjectId;
     
     // Add loading message
     const loadingMessage: LocalChatMessage = {
@@ -1286,7 +1291,7 @@ export default function ChatComposerScreen() {
       }
       
       if (!currentProjectId) {
-        const uploadedMedia = mediaUris.filter(m => m.storageId);
+        const uploadedMedia = mediaUris.filter(hasStorageId);
         const fileMetadata = uploadedMedia.map(m => ({
           storageId: m.storageId,
           filename: `${m.type}_${m.id}.${m.type === 'video' ? 'mp4' : 'jpg'}`,
@@ -1309,7 +1314,7 @@ export default function ChatComposerScreen() {
         // Update prompt
         if (userInput) {
           await updateChatProjectPrompt({
-            projectId: currentProjectId as Id<"projects">,
+            projectId: currentProjectId!,
             prompt: userInput,
           });
         }
@@ -1317,21 +1322,21 @@ export default function ChatComposerScreen() {
       
       // Store user message in backend (skip on retry only if already persisted by the original call)
       if (!isRetry || !lastGenerateArgsRef.current?.userMessagePersisted) {
-        const uploadedMediaForMessage = mediaUris.filter(m => m.storageId);
+        const uploadedMediaForMessage = mediaUris.filter(hasStorageId);
         
-        let mediaIdsToAttach: string[] | undefined;
+        let mediaIdsToAttach: Id<"_storage">[] | undefined;
         if (!hasScript && uploadedMediaForMessage.length > 0) {
-          mediaIdsToAttach = uploadedMediaForMessage.map(m => m.storageId).filter(Boolean) as string[];
+          mediaIdsToAttach = uploadedMediaForMessage.map(m => m.storageId);
         } else if (isNewMedia && newMediaIds.length > 0) {
           mediaIdsToAttach = newMediaIds;
         }
         
         await addChatMessage({
-          projectId: currentProjectId as Id<"projects">,
+          projectId: currentProjectId!,
           role: 'user',
           content: userInput || '',
           messageIndex: userMessageCount + 1,
-          mediaIds: mediaIdsToAttach as any,
+          mediaIds: mediaIdsToAttach,
         });
         if (lastGenerateArgsRef.current) {
           lastGenerateArgsRef.current.userMessagePersisted = true;
@@ -1342,57 +1347,47 @@ export default function ChatComposerScreen() {
       // Composition/rendering reads project.files + project.fileMetadata.
       const isFollowUpWithNewMedia = hasScript && isNewMedia && newMediaIds.length > 0;
       let newMediaFilesForCaptioning:
-        | { url: string; filename: string; contentType: string }[]
+        | { storageId: Id<"_storage">; filename: string; contentType: string }[]
         | undefined;
       if (isFollowUpWithNewMedia) {
         const newMediaIdSet = new Set(newMediaIds);
         const uniqueNewMedia = Array.from(
           new Map(
             mediaUris
-              .filter(m => m.storageId && newMediaIdSet.has(m.storageId))
+              .filter(hasStorageId)
+              .filter(m => newMediaIdSet.has(m.storageId))
               .map(m => [String(m.storageId), m])
           ).values()
         );
 
         if (uniqueNewMedia.length > 0) {
-          const filesToAdd = uniqueNewMedia
-            .map(m => m.storageId)
-            .filter((id): id is string => !!id);
+          const filesToAdd = uniqueNewMedia.map(m => m.storageId);
 
-          const fileMetadataToAdd = uniqueNewMedia
-            .filter((m): m is PendingMedia & { storageId: string } => !!m.storageId)
-            .map((m) => ({
-              storageId: m.storageId as any,
-              filename: `${m.type}_${m.id}.${m.type === 'video' ? 'mp4' : 'jpg'}`,
-              contentType: m.type === 'video' ? 'video/mp4' : 'image/jpeg',
-              size: 0,
-            }));
+          const fileMetadataToAdd = uniqueNewMedia.map((m) => ({
+            storageId: m.storageId,
+            filename: `${m.type}_${m.id}.${m.type === 'video' ? 'mp4' : 'jpg'}`,
+            contentType: m.type === 'video' ? 'video/mp4' : 'image/jpeg',
+            size: 0,
+          }));
 
           if (filesToAdd.length > 0 && fileMetadataToAdd.length > 0) {
             await addFilesToProject({
-              projectId: currentProjectId as Id<"projects">,
-              files: filesToAdd as any,
-              fileMetadata: fileMetadataToAdd as any,
+              projectId: currentProjectId!,
+              files: filesToAdd,
+              fileMetadata: fileMetadataToAdd,
             });
           }
 
-          const newMediaFilesRaw = await Promise.all(
-            uniqueNewMedia.map(async (media) => {
-              if (!media.storageId) return null;
-              const url = await convex.query(api.tasks.getStorageUrl, {
-                storageId: media.storageId as any,
-              });
-              if (!url) return null;
-              return {
-                url,
-                filename: `${media.type}_${media.id}.${media.type === 'video' ? 'mp4' : 'jpg'}`,
-                contentType: media.type === 'video' ? 'video/mp4' : 'image/jpeg',
-              };
-            })
-          );
-          newMediaFilesForCaptioning = newMediaFilesRaw.filter(
-            (item): item is { url: string; filename: string; contentType: string } => item !== null
-          );
+          // Build newMediaFiles for the generateChatScript action.
+          // The backend schema expects { storageId, filename, contentType };
+          // the previous code fetched URLs but the backend handler doesn't
+          // use this field — sending storageIds is type-correct and avoids
+          // an unnecessary network round-trip per file.
+          newMediaFilesForCaptioning = uniqueNewMedia.map((m) => ({
+            storageId: m.storageId,
+            filename: `${m.type}_${m.id}.${m.type === 'video' ? 'mp4' : 'jpg'}`,
+            contentType: m.type === 'video' ? 'video/mp4' : 'image/jpeg',
+          }));
         }
       }
       
@@ -1424,10 +1419,10 @@ export default function ChatComposerScreen() {
       // Generate script (saveAndNotify: true means backend saves script and sends notification)
       // Backend will wait for captions from the captioning pipeline if not yet available.
       const result = await generateChatScript({
-        projectId: currentProjectId as Id<"projects">,
+        projectId: currentProjectId!,
         conversationHistory,
         cachedMediaDescriptions: cachedDescriptions,
-        newMediaFiles: newMediaFilesForCaptioning as any,
+        newMediaFiles: newMediaFilesForCaptioning,
         isFirstMessage: !hasScript,
         isNewMedia,
         newMediaCount,
@@ -1763,7 +1758,7 @@ export default function ChatComposerScreen() {
       if (createdProjectId) {
         try {
           await updateProjectVoiceSpeed({
-            id: createdProjectId as any,
+            id: createdProjectId,
             voiceSpeed: newSpeed,
           });
         } catch (error) {
@@ -1808,7 +1803,7 @@ export default function ChatComposerScreen() {
     if (createdProjectId) {
       try {
         await updateProjectKeepOrder({
-          id: createdProjectId as any,
+          id: createdProjectId,
           keepOrder: newValue,
         });
       } catch (error) {
@@ -1939,7 +1934,7 @@ export default function ChatComposerScreen() {
       // This must happen before addVideo to prevent a race condition:
       // If addVideo runs first, the polling service sees local status 'processing' but backend still 'failed',
       // which triggers a false failure notification
-      await markProjectSubmitted({ id: targetProjectId as any });
+      await markProjectSubmitted({ id: targetProjectId! });
       
       // Now add video to context with processing status (polling will see consistent state)
       addVideo({
@@ -2149,7 +2144,7 @@ export default function ChatComposerScreen() {
   const saveDraft = async (): Promise<boolean> => {
     if (createdProjectId || !userId) return false;
 
-    const uploaded = mediaUrisRef.current.filter(m => m.storageId);
+    const uploaded = mediaUrisRef.current.filter(hasStorageId);
     if (uploaded.length === 0) return false;
 
     try {
