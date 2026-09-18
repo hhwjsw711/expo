@@ -30,8 +30,12 @@ function segmentPlan(seg: unknown, extra: Record<string, unknown> = {}): string 
   const segObj = (typeof seg === "object" && seg !== null) ? (seg as Record<string, unknown>) : {};
   const segDur = Number(segObj.duration);
   const defaults: Record<string, unknown> = {};
-  if (Number.isFinite(segDur) && segDur > 0 && !("durationInSeconds" in extra)) {
+  if (Number.isFinite(segDur) && segDur >= 0.3 && !("durationInSeconds" in extra)) {
     defaults.durationInSeconds = segDur;
+  }
+  // Also auto-align durationInFrames for valid durations
+  if (Number.isFinite(segDur) && segDur >= 0.3 && !("durationInFrames" in extra)) {
+    defaults.durationInFrames = Math.round(segDur * 30);
   }
   return plan({ segments: [seg], ...defaults, ...extra });
 }
@@ -159,18 +163,42 @@ describe("numeric coercion", () => {
     const raw = '{"segments":[{"file":"video0.mp4","startFrom":0,"duration":1e999}],"durationInSeconds":3}';
     expect(validateTimelinePlan(raw).ok).toBe(false);
   });
+  test("negative startFrom is rejected", () => {
+    const r = validateTimelinePlan(segmentPlan({ file: "video0.mp4", startFrom: -1, duration: 3 }));
+    expect(r.ok).toBe(false);
+  });
+  test("startFrom 0 (the floor) passes", () => {
+    const r = validateTimelinePlan(segmentPlan({ file: "video0.mp4", startFrom: 0, duration: 3 }));
+    expect(r.ok).toBe(true);
+  });
+  test("zero or negative playbackRate is rejected", () => {
+    const r0 = validateTimelinePlan(plan({ audio: { voiceFile: "audio.mp3", playbackRate: 0, includeVoice: true } }));
+    expect(r0.ok).toBe(false);
+    const rNeg = validateTimelinePlan(plan({ audio: { voiceFile: "audio.mp3", playbackRate: -1, includeVoice: true } }));
+    expect(rNeg.ok).toBe(false);
+  });
+  test("durationInFrames mismatch (999 vs expected 300) is rejected", () => {
+    const raw = plan({ durationInFrames: 999 });
+    expect(validateTimelinePlan(raw, MEDIA).ok).toBe(false);
+  });
+  test("durationInFrames exact match passes", () => {
+    const raw = plan({ durationInFrames: 300, durationInSeconds: 10 });
+    expect(validateTimelinePlan(raw, MEDIA).ok).toBe(true);
+  });
 });
 
-// ─── 5. duration range (0, 10] ─────────────────────────────────────────────
+// ─── 5. duration range [0.3, 10] ─────────────────────────────────────────
 
 describe("duration range", () => {
   const cases: Array<[unknown, boolean]> = [
     [0, false],
     [-1, false],
-    [0.001, true],
+    [0.001, false],   // below MIN_SEGMENT_DURATION (0.3)
+    [0.29, false],    // just below floor
+    [0.3, true],      // the floor itself
     [10, true],
     [10.01, false],
-    [1e-9, true],
+    [1e-9, false],    // below floor
   ];
   for (const [dur, shouldPass] of cases) {
     test(`duration ${String(dur)} ${shouldPass ? "passes" : "is rejected"}`, () => {
@@ -192,12 +220,12 @@ describe("duration alignment", () => {
   test("exact match passes", () => {
     expect(validateTimelinePlan(plan(), MEDIA).ok).toBe(true);
   });
-  test("0.75s tolerance boundary passes (<= 0.75)", () => {
-    const raw = plan({ durationInSeconds: 10.75 }); // 10 vs 10.75 = 0.75
+  test("0.01s tolerance boundary passes", () => {
+    const raw = plan({ durationInSeconds: 10.01 }); // 10 vs 10.01 = 0.01
     expect(validateTimelinePlan(raw, MEDIA).ok).toBe(true);
   });
-  test("0.76s drift is rejected", () => {
-    const raw = plan({ durationInSeconds: 10.76 });
+  test("0.02s drift is rejected", () => {
+    const raw = plan({ durationInSeconds: 10.02 });
     expect(validateTimelinePlan(raw, MEDIA).ok).toBe(false);
   });
   test("error message reports both numbers", () => {

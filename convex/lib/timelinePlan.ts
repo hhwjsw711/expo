@@ -51,12 +51,16 @@ function validateMediaRef(
  * - non-empty segments[] with numeric times
  * - every segment file exists in the sandbox media directory (when the
  *   caller supplies the actual directory listing)
+ * - segment startFrom >= 0 and duration within [MIN, MAX] (aligned with
+ *   timelineEngine.ts to prevent plans that pass the validator but get
+ *   rejected by the editor's invariant checker)
  * - audio/subtitle file references are plain existing filenames (they are
  *   interpolated unescaped into the generated TSX — injection guard)
+ * - audio.playbackRate > 0 (0 or negative would freeze/corrupt audio)
  * - fps / durationInFrames are positive numbers (interpolated raw)
+ * - durationInFrames is consistent with segments sum * fps (within 2 frames)
  * - summed segment durations match the declared durationInSeconds within
- *   a small tolerance (playbackRate only speeds up the voice track and
- *   does NOT change on-screen segment time, so no adjustment is applied)
+ *   a tight tolerance (0.01s, matching the engine's invariant checker)
  */
 export function validateTimelinePlan(
   raw: string,
@@ -76,12 +80,14 @@ export function validateTimelinePlan(
   // Segments play back-to-back and fill the whole composition, so their sum
   // must match the declared duration. playbackRate only affects how fast the
   // voiceover audio plays (audio ends early if > 1), not the screen time.
+  // Tolerance is tight (0.01s) to match the engine's invariant checker —
+  // a plan that passes here should also pass the editor.
   const totalDuration = plan.segments.reduce(
     (sum: number, seg: any) => sum + (Number(seg?.duration) || 0),
     0
   );
   const declared = Number(plan?.durationInSeconds) || 0;
-  if (declared > 0 && Math.abs(totalDuration - declared) > 0.75) {
+  if (declared > 0 && Math.abs(totalDuration - declared) > 0.01) {
     return {
       ok: false,
       error: `segment durations (${totalDuration.toFixed(2)}s) != declared ${declared.toFixed(2)}s`,
@@ -102,8 +108,17 @@ export function validateTimelinePlan(
     if (!Number.isFinite(Number(seg.startFrom)) || !Number.isFinite(Number(seg.duration))) {
       return { ok: false, error: `segment ${seg.file} has non-numeric startFrom/duration` };
     }
-    if (Number(seg.duration) <= 0 || Number(seg.duration) > 10) {
-      return { ok: false, error: `segment ${seg.file} duration ${seg.duration}s out of range (0, 10]` };
+    // startFrom must be >= 0 — negative values produce negative frame
+    // offsets in generate-composition.ts, causing undefined Remotion behavior.
+    if (Number(seg.startFrom) < 0) {
+      return { ok: false, error: `segment ${seg.file} startFrom ${seg.startFrom}s is negative` };
+    }
+    // Duration bounds match timelineEngine.ts MIN/MAX_SEGMENT_DURATION.
+    // A plan with duration < 0.3 passes the old validator but gets rejected
+    // by the editor's invariant checker, leaving the user with a confusing
+    // "save failed" error after the backend already accepted it.
+    if (Number(seg.duration) < 0.3 || Number(seg.duration) > 10) {
+      return { ok: false, error: `segment ${seg.file} duration ${seg.duration}s out of range [0.3, 10]` };
     }
   }
 
@@ -137,6 +152,26 @@ export function validateTimelinePlan(
   }
   if (!Number.isFinite(Number(plan.durationInFrames)) || Number(plan.durationInFrames) <= 0) {
     return { ok: false, error: "durationInFrames must be a positive number" };
+  }
+  // Cross-check: durationInFrames should be consistent with
+  // segments sum * fps. A mismatch produces black frames at the end
+  // (durationInFrames too large) or clips the last segment (too small).
+  // Allow 2-frame tolerance for rounding.
+  const fps = Number(plan.fps);
+  const expectedFrames = Math.round(totalDuration * fps);
+  const actualFrames = Number(plan.durationInFrames);
+  if (Math.abs(actualFrames - expectedFrames) > 2) {
+    return {
+      ok: false,
+      error: `durationInFrames (${actualFrames}) != segments sum * fps (${expectedFrames}), drift > 2 frames`,
+    };
+  }
+  // playbackRate <= 0 would freeze audio in Remotion (<Audio playbackRate={0}>).
+  if (audio && typeof audio === "object") {
+    const pr = Number(audio.playbackRate);
+    if (audio.playbackRate !== undefined && (!Number.isFinite(pr) || pr <= 0)) {
+      return { ok: false, error: `audio.playbackRate ${audio.playbackRate} must be a positive number` };
+    }
   }
   return { ok: true, plan };
 }
