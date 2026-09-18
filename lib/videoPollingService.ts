@@ -84,9 +84,16 @@ export function useVideoPolling() {
 
           // Check if all media assets are ready but video not rendered yet
           // Music is optional — generation may fail, but we can still render without it
+          // videoUrls contains FAL-animated clips for images; for video-only
+          // projects videoUrls may be empty (user's original videos are in
+          // project.files), so we also accept projects that have uploaded
+          // video files in fileMetadata.
+          const hasVideoFiles = (project.fileMetadata ?? []).some(
+            (m: any) => typeof m?.contentType === 'string' && m.contentType.startsWith('video/'),
+          );
           const hasAllMediaAssets = !!(
-            project.audioUrl && 
-            project.videoUrls && project.videoUrls.length > 0
+            project.audioUrl &&
+            ((project.videoUrls && project.videoUrls.length > 0) || hasVideoFiles)
           );
           
           // ONLY mark as failed if backend explicitly sets status to 'failed'
@@ -166,6 +173,7 @@ export function useVideoPolling() {
               .then((result) => {
                 if (!result?.success) {
                   console.warn('[VideoPolling] Sequence not started:', result?.error);
+                  renderTriggered.current.delete(video.id);
                   return;
                 }
                 console.log('[VideoPolling] ✅ Sequence created for:', video.id, '— user can preview/edit/render');
@@ -174,6 +182,7 @@ export function useVideoPolling() {
               })
               .catch((error) => {
                 console.warn('[VideoPolling] Sequence error:', error);
+                renderTriggered.current.delete(video.id);
               });
           }
           // Priority 3b-RETRY: A transient timeout left a live sandbox with
@@ -203,12 +212,14 @@ export function useVideoPolling() {
                 .then((result) => {
                   if (!result?.success) {
                     console.warn('[VideoPolling] Sequence retry not started:', result?.error);
+                    renderTriggered.current.delete(video.id);
                     return;
                   }
                   console.log('[VideoPolling] ✅ Sequence retry created for:', video.id);
                 })
                 .catch((error) => {
                   console.warn('[VideoPolling] Sequence retry error:', error);
+                  renderTriggered.current.delete(video.id);
                 });
             } else {
               console.log('[VideoPolling] ⏳ Retry budget exhausted for:', video.id);
@@ -249,13 +260,33 @@ export function useVideoPolling() {
               .then((result) => {
                 if (!result?.success) {
                   console.warn('[VideoPolling] Fork sequence not started:', result?.error);
+                  renderTriggered.current.delete(video.id);
                   return;
                 }
                 console.log('[VideoPolling] ✅ Fork sequence created for:', video.id);
               })
               .catch((error) => {
                 console.warn('[VideoPolling] Fork sequence error:', error);
+                renderTriggered.current.delete(video.id);
               });
+          }
+          // Priority 3b-RECOVER: Sandbox exists AND timeline exists but
+          // status is "completed" + "retry available" — a transient error
+          // after Claude produced the timeline left the project in a state
+          // no other branch matches. The sandbox and timeline are valid,
+          // so the user can preview and render. Mark as ready.
+          else if (
+            (project.status === 'completed' || project.status === 'rendering') &&
+            project.sandboxId &&
+            project.timelineJson &&
+            !project.renderedVideoUrl &&
+            project.renderProgress?.step === 'retry available'
+          ) {
+            if (video.status !== 'ready') {
+              console.log('[VideoPolling] ✅ Recovering: sandbox+timeline ready, marking as ready:', video.id);
+              updateVideoStatus(video.id, 'ready', undefined, undefined, project.thumbnailUrl ?? undefined);
+              anyStateChanged = true;
+            }
           }
           // Priority 3b: Sandbox exists but video not rendered — keep as processing
           // (previously auto-resumed renderFinalVideo; now user must tap Render in video-preview)

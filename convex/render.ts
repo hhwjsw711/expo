@@ -253,7 +253,8 @@ async function downloadAndUploadVideo(
   sb: Sandbox,
   videoPath: string,
   projectId: Id<"projects">,
-  expectedSeconds?: number
+  expectedSeconds: number | undefined,
+  project: any,
 ): Promise<string> {
   // Verify output exists
   const sizeResult = await sb.commands.run(
@@ -264,8 +265,15 @@ async function downloadAndUploadVideo(
     throw new Error(`output video too small (${outputSize} bytes)`);
   }
 
-  // Audio fallback: ensure video has an audio track
-  await ensureAudioTrack(sb, videoPath);
+  // Audio fallback: ensure video has an audio track, but only if the
+  // timeline requests voice/audio. If the user explicitly disabled voice
+  // (includeVoice !== true), we skip muxing — a silent video is the
+  // intended result, not a bug.
+  const timeline = project.timelineJson ? JSON.parse(project.timelineJson) : null;
+  const wantsAudio = !timeline?.audio || timeline.audio.includeVoice !== false;
+  if (wantsAudio) {
+    await ensureAudioTrack(sb, videoPath);
+  }
 
   // ffprobe validation: catch broken renders (wrong duration / resolution /
   // missing audio) before uploading. A validation failure is permanent —
@@ -304,7 +312,19 @@ async function downloadAndUploadVideo(
     headers: { "Content-Type": "video/mp4" },
     body: videoBuffer,
   });
-  const { storageId }: { storageId: Id<"_storage"> } = await uploadResponse.json();
+  if (!uploadResponse.ok) {
+    throw new Error(`upload to Convex storage failed: ${uploadResponse.status} ${uploadResponse.statusText} (fetch upload returned error)`);
+  }
+  let storageId: Id<"_storage">;
+  try {
+    const json = await uploadResponse.json();
+    storageId = json.storageId;
+  } catch (e) {
+    throw new Error(`upload response parse failed (fetch returned non-JSON): ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!storageId) {
+    throw new Error("upload to Convex storage returned no storageId (fetch upload incomplete)");
+  }
   const renderedVideoUrl: string | null = await ctx.storage.getUrl(storageId);
   console.log("[render] uploaded, url:", renderedVideoUrl);
 
@@ -815,7 +835,7 @@ export const renderFinalVideo = action({
       // ── 3. Download + upload + update ──
       // expectedSeconds was parsed above (A4 recovery check) — reuse it
       // for the post-render ffprobe validation.
-      const renderedVideoUrl = await downloadAndUploadVideo(ctx, sb, videoPath, projectId, expectedSeconds);
+      const renderedVideoUrl = await downloadAndUploadVideo(ctx, sb, videoPath, projectId, expectedSeconds, project);
 
       // ── 4. Kill sandbox ──
       console.log("[render-final] killing sandbox...");

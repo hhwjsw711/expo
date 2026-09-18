@@ -717,6 +717,13 @@ export const updateProjectSandbox = internalMutation({
 // and `bun remotion render` would corrupt the output file. Atomically
 // checks renderProgress.step and claims the slot in one mutation. The lock
 // auto-releases: success and failure paths both overwrite renderProgress.
+//
+// STALE LOCK RECOVERY: if a Convex action times out or the platform
+// restarts mid-render, the catch block never runs and renderProgress
+// stays at "rendering video" forever. To prevent permanent deadlock,
+// we treat any lock older than RENDER_LOCK_STALE_MS as stale and
+// force-acquire it. 15 minutes is generous for a Remotion render that
+// typically completes in 1-3 minutes.
 export const internalTryRenderFinalLock = internalMutation({
   args: {
     projectId: v.id("projects"),
@@ -725,7 +732,16 @@ export const internalTryRenderFinalLock = internalMutation({
     const project = await ctx.db.get(projectId);
     if (!project) return { ok: false, error: "project not found" };
     if (project.renderProgress?.step === "rendering video") {
-      return { ok: false, error: "render already in progress" };
+      const lockAge = Date.now() - (project.renderProgress.timestamp ?? 0);
+      const RENDER_LOCK_STALE_MS = 15 * 60 * 1000; // 15 minutes
+      if (lockAge < RENDER_LOCK_STALE_MS) {
+        return { ok: false, error: "render already in progress" };
+      }
+      // Stale lock — force acquire. The previous render action was
+      // killed by the platform; its catch block never ran.
+      console.warn(
+        `[render-lock] Stale lock detected (${(lockAge / 1000 / 60).toFixed(1)}min old), force-acquiring`,
+      );
     }
     await ctx.db.patch(projectId, {
       renderProgress: {
