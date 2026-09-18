@@ -148,42 +148,63 @@ export function useVideoPolling() {
           // Priority 3: Trigger sequence creation if media assets are ready but sequence not started
           // NOTE: Previously auto-chained createSequence -> renderFinalVideo.
           //   Now only create the sequence. User previews/edits in video-preview, then taps Render.
+          //
+          // Also handles DEADLOCK STATE A: a transient error before sandbox
+          // creation left the project with status 'completed' + 'retry available'
+          // but no sandboxId and no timelineJson. The old condition required
+          // !renderProgress, which blocked retries. Now we also accept
+          // 'retry available' and apply the same retry budget as 3b-RETRY.
           else if (
             project.status === 'completed' &&
             hasAllMediaAssets &&
             !project.renderedVideoUrl &&
-            !project.renderProgress &&
+            (!project.renderProgress || project.renderProgress?.step === 'retry available') &&
             !project.sandboxId &&  // Only trigger if no sandbox yet (not mid-pipeline)
             !project.timelineJson &&  // Sequence not yet created
             !renderTriggered.current.has(video.id)
           ) {
-            // Media assets ready, but sequence not created - trigger it!
-            console.log('[VideoPolling] ✅ All media assets ready! Triggering sequence for:', video.id);
-
-            renderTriggered.current.add(video.id);
-            anyStateChanged = true;
-
-            // Keep as processing - don't mark as failed even if action throws
-            if (video.status === 'pending') {
-              updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl ?? undefined);
+            // If this is a retry (not a fresh trigger), check the budget
+            const isRetry = project.renderProgress?.step === 'retry available';
+            if (isRetry) {
+              const retries = sequenceRetryCount.current.get(video.id) ?? 0;
+              if (retries >= SEQUENCE_MAX_RETRIES) {
+                console.log('[VideoPolling] ⏳ Retry budget exhausted for:', video.id);
+              } else {
+                sequenceRetryCount.current.set(video.id, retries + 1);
+                console.log(`[VideoPolling] 🔄 Retrying sequence (attempt ${retries + 1}/${SEQUENCE_MAX_RETRIES}) for:`, video.id);
+              }
             }
+            // Only proceed if not exhausted (isRetry && exhausted falls through to Priority 4)
+            const shouldTrigger = !isRetry || (sequenceRetryCount.current.get(video.id) ?? 0) <= SEQUENCE_MAX_RETRIES;
+            if (shouldTrigger) {
+              // Media assets ready, but sequence not created - trigger it!
+              console.log('[VideoPolling] ✅ All media assets ready! Triggering sequence for:', video.id);
 
-            // Step 1: Create sequence only (sandbox + upload + Claude + timeline.json)
-            createSequence({ projectId: video.projectId as any })
-              .then((result) => {
-                if (!result?.success) {
-                  console.warn('[VideoPolling] Sequence not started:', result?.error);
+              renderTriggered.current.add(video.id);
+              anyStateChanged = true;
+
+              // Keep as processing - don't mark as failed even if action throws
+              if (video.status === 'pending') {
+                updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl ?? undefined);
+              }
+
+              // Step 1: Create sequence only (sandbox + upload + Claude + timeline.json)
+              createSequence({ projectId: video.projectId as any })
+                .then((result) => {
+                  if (!result?.success) {
+                    console.warn('[VideoPolling] Sequence not started:', result?.error);
+                    renderTriggered.current.delete(video.id);
+                    return;
+                  }
+                  console.log('[VideoPolling] ✅ Sequence created for:', video.id, '— user can preview/edit/render');
+                  // NOTE: Do NOT auto-trigger renderFinalVideo.
+                  // User will see the video in "processing" state until they open it and tap Render.
+                })
+                .catch((error) => {
+                  console.warn('[VideoPolling] Sequence error:', error);
                   renderTriggered.current.delete(video.id);
-                  return;
-                }
-                console.log('[VideoPolling] ✅ Sequence created for:', video.id, '— user can preview/edit/render');
-                // NOTE: Do NOT auto-trigger renderFinalVideo.
-                // User will see the video in "processing" state until they open it and tap Render.
-              })
-              .catch((error) => {
-                console.warn('[VideoPolling] Sequence error:', error);
-                renderTriggered.current.delete(video.id);
-              });
+                });
+            }
           }
           // Priority 3b-RETRY: A transient timeout left a live sandbox with
           // "retry available" — nothing else consumes this state, so
@@ -250,25 +271,33 @@ export function useVideoPolling() {
             !project.sandboxId &&
             !renderTriggered.current.has(video.id)
           ) {
-            console.log('[VideoPolling] ✅ Timeline ready, rebuilding sequence (Branch B):', video.id);
-            renderTriggered.current.add(video.id);
-            anyStateChanged = true;
-            if (video.status === 'pending') {
-              updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl ?? undefined);
-            }
-            createSequence({ projectId: video.projectId as any })
-              .then((result) => {
-                if (!result?.success) {
-                  console.warn('[VideoPolling] Fork sequence not started:', result?.error);
+            // Apply the same retry budget as 3b-RETRY to prevent
+            // infinite sandbox create/destroy cycles on persistent errors.
+            const retries = sequenceRetryCount.current.get(video.id) ?? 0;
+            if (retries >= SEQUENCE_MAX_RETRIES) {
+              console.log('[VideoPolling] ⏳ Fork retry budget exhausted for:', video.id);
+            } else {
+              sequenceRetryCount.current.set(video.id, retries + 1);
+              console.log(`[VideoPolling] ✅ Timeline ready, rebuilding sequence (Branch B, attempt ${retries + 1}/${SEQUENCE_MAX_RETRIES}):`, video.id);
+              renderTriggered.current.add(video.id);
+              anyStateChanged = true;
+              if (video.status === 'pending') {
+                updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl ?? undefined);
+              }
+              createSequence({ projectId: video.projectId as any })
+                .then((result) => {
+                  if (!result?.success) {
+                    console.warn('[VideoPolling] Fork sequence not started:', result?.error);
+                    renderTriggered.current.delete(video.id);
+                    return;
+                  }
+                  console.log('[VideoPolling] ✅ Fork sequence created for:', video.id);
+                })
+                .catch((error) => {
+                  console.warn('[VideoPolling] Fork sequence error:', error);
                   renderTriggered.current.delete(video.id);
-                  return;
-                }
-                console.log('[VideoPolling] ✅ Fork sequence created for:', video.id);
-              })
-              .catch((error) => {
-                console.warn('[VideoPolling] Fork sequence error:', error);
-                renderTriggered.current.delete(video.id);
-              });
+                });
+            }
           }
           // Priority 3b-RECOVER: Sandbox exists AND timeline exists but
           // status is "completed" + "retry available" — a transient error

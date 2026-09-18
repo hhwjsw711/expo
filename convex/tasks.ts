@@ -4,7 +4,7 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { prompts } from "./prompts";
 import { requireAuth, requireProjectOwnership } from "./auth";
-import { resolveTimelineRevision } from "./lib/timelinePlan";
+import { resolveTimelineRevision, validateTimelinePlan } from "./lib/timelinePlan";
 
 const isImageUrl = (url: string): boolean => {
   const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
@@ -1198,6 +1198,16 @@ export const saveEditorChanges = mutation({
 
       // 1. Save timeline/ASS to the original project (preserves editor state)
       //    and record the revision in the history table.
+      //
+      // Validate the timeline BEFORE creating the fork — a malformed timeline
+      // would pass the save but fail in createSequence Branch B, leaving a
+      // dead fork project in the user's gallery. We skip the media-listing
+      // cross-check (no sandbox here) but catch structural/numeric errors.
+      const validation = validateTimelinePlan(timelineJson);
+      if (!validation.ok) {
+        return { success: false, error: `timeline validation failed: ${validation.error}` };
+      }
+
       await ctx.db.insert("timelines", {
         projectId,
         revision: check.nextRevision,
@@ -1570,35 +1580,49 @@ export const generateMediaAssets = internalAction({
       for (let i = 0; i < imageOnlyUrls.length; i++) {
         console.log(`[generate-media] Processing image ${i + 1}/${imageOnlyUrls.length}`);
 
-        try {
-          const animateResult = await ctx.runAction(internal.aiServices.animateImage, {
-            imageUrl: imageOnlyUrls[i],
-          });
-
-          if (animateResult.success && animateResult.data) {
-            const data = animateResult.data as any;
-            const videoUrl = data.video?.url;
-            if (videoUrl) {
-              videoUrls.push(videoUrl);
-              console.log(`[generate-media] Animated image ${i + 1} SUCCESS, total videos: ${videoUrls.length}`);
-
-              await ctx.runMutation(internal.tasks.updateProjectWithReelfulData, {
-                id: projectId,
-                script: project.script,
-                audioUrl: audioUrl || undefined,
-                srtContent: srtContent || undefined,
-                musicUrl: musicUrl || undefined,
-                videoUrls: videoUrls.length > 0 ? videoUrls : undefined,
-                status: "processing",
-              });
-            } else {
-              console.error(`[generate-media] Image ${i + 1} animation succeeded but no video URL!`);
-            }
-          } else {
-            console.error(`[generate-media] Image ${i + 1} animation failed:`, animateResult.error);
+        // Limited retry: FAL/Kling may return 429 or 502 transiently.
+        // Retry up to 2 times with a 5-second delay between attempts.
+        const MAX_ANIMATION_RETRIES = 2;
+        let animated = false;
+        for (let attempt = 0; attempt <= MAX_ANIMATION_RETRIES && !animated; attempt++) {
+          if (attempt > 0) {
+            console.log(`[generate-media] Retrying image ${i + 1} (attempt ${attempt + 1}/${MAX_ANIMATION_RETRIES + 1})`);
+            await new Promise((r) => setTimeout(r, 5000));
           }
-        } catch (error) {
-          console.error(`[generate-media] Exception animating image ${i + 1}:`, error instanceof Error ? error.message : String(error));
+          try {
+            const animateResult = await ctx.runAction(internal.aiServices.animateImage, {
+              imageUrl: imageOnlyUrls[i],
+            });
+
+            if (animateResult.success && animateResult.data) {
+              const data = animateResult.data as any;
+              const videoUrl = data.video?.url;
+              if (videoUrl) {
+                videoUrls.push(videoUrl);
+                animated = true;
+                console.log(`[generate-media] Animated image ${i + 1} SUCCESS (attempt ${attempt + 1}), total videos: ${videoUrls.length}`);
+
+                await ctx.runMutation(internal.tasks.updateProjectWithReelfulData, {
+                  id: projectId,
+                  script: project.script,
+                  audioUrl: audioUrl || undefined,
+                  srtContent: srtContent || undefined,
+                  musicUrl: musicUrl || undefined,
+                  videoUrls: videoUrls.length > 0 ? videoUrls : undefined,
+                  status: "processing",
+                });
+              } else {
+                console.error(`[generate-media] Image ${i + 1} attempt ${attempt + 1}: succeeded but no video URL!`);
+              }
+            } else {
+              console.error(`[generate-media] Image ${i + 1} attempt ${attempt + 1} failed:`, animateResult.error);
+            }
+          } catch (error) {
+            console.error(`[generate-media] Exception animating image ${i + 1} attempt ${attempt + 1}:`, error instanceof Error ? error.message : String(error));
+          }
+        }
+        if (!animated) {
+          console.error(`[generate-media] Image ${i + 1} permanently failed after ${MAX_ANIMATION_RETRIES + 1} attempts, skipping`);
         }
       }
 

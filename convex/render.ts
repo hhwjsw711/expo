@@ -424,7 +424,18 @@ export const createSequence = action({
           await sandbox.commands.run("echo alive");
           console.log("[sequence] existing sandbox is alive");
         } catch {
-          console.log("[sequence] existing sandbox dead, creating new one");
+          console.log("[sequence] existing sandbox dead/paused, creating new one");
+          // Best-effort kill the old sandbox to avoid E2B quota leaks.
+          // If it's paused (not dead), Sandbox.kill still frees the slot.
+          if (project.sandboxId) {
+            try {
+              const old = await Sandbox.connect(project.sandboxId, { apiKey: process.env.E2B_API_KEY, timeoutMs: 5000 });
+              await old.kill();
+              console.log("[sequence] killed stale sandbox:", project.sandboxId);
+            } catch {
+              // Already gone — nothing to clean up.
+            }
+          }
           sandbox = undefined;
         }
       }
