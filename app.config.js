@@ -1,14 +1,11 @@
 module.exports = ({ config }) => {
-  // Get the Convex URL from environment variables or use production URL
-  const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL || 'https://quick-echidna-290.convex.cloud';
+  // Get the Convex URL from environment variables or use dev URL.
+  // The dev deployment (vibrant-chinchilla-116) contains the backdoor test
+  // user and all test data. Production is only used when explicitly set via
+  // EXPO_PUBLIC_CONVEX_URL in the build environment (e.g. EAS Production).
+  const convexUrl = process.env.EXPO_PUBLIC_CONVEX_URL || 'https://vibrant-chinchilla-116.convex.cloud';
 
   console.log('[app.config.js] Convex URL:', convexUrl);
-
-  if (!process.env.EXPO_PUBLIC_CONVEX_URL) {
-    console.warn(
-      '⚠️  EXPO_PUBLIC_CONVEX_URL is not set. Using production URL: https://quick-echidna-290.convex.cloud'
-    );
-  }
 
   return {
     ...config,
