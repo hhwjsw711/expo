@@ -1,0 +1,4 @@
+# Exclude test assets from EAS builds
+assets/test-video.mp4
+constants/testData.ts
+.maestro/
