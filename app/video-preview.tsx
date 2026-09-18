@@ -335,7 +335,7 @@ export default function VideoPreviewScreen() {
         console.log('[video-preview] Setting video URI from project data');
         setVideoUri(project.renderedVideoUrl);
         if (videoId) {
-          updateVideoStatus(videoId, 'ready', project.renderedVideoUrl, undefined, project.thumbnailUrl);
+          updateVideoStatus(videoId, 'ready', project.renderedVideoUrl, undefined, project.thumbnailUrl ?? undefined);
         }
       }
     }
@@ -920,7 +920,7 @@ export default function VideoPreviewScreen() {
           const fileUri = `${FileSystem.documentDirectory}wordream_${Date.now()}.mp4`;
           const downloadResumable = FileSystem.createDownloadResumable(
             url, fileUri, {},
-            (progress) => {
+            (progress: { totalBytesWritten: number; totalBytesExpectedToWrite: number }) => {
               if (progress.totalBytesExpectedToWrite > 0) {
                 setDownloadProgress(progress.totalBytesWritten / progress.totalBytesExpectedToWrite);
               }
@@ -1755,7 +1755,7 @@ export default function VideoPreviewScreen() {
             downloadUrl,
             fileUri,
             {},
-            (progress) => {
+            (progress: { totalBytesWritten: number; totalBytesExpectedToWrite: number }) => {
               if (progress.totalBytesExpectedToWrite > 0) {
                 const pct = progress.totalBytesWritten / progress.totalBytesExpectedToWrite;
                 setDownloadProgress(pct);

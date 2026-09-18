@@ -1264,7 +1264,7 @@ export default function VideoEditorScreen() {
               createdAt: Date.now(),
               status: 'processing',
               projectId: result.newProjectId,
-              thumbnailUrl: project?.thumbnailUrl,
+              thumbnailUrl: project?.thumbnailUrl ?? undefined,
             });
           }
           router.replace('/(tabs)');

@@ -24,7 +24,7 @@ export default function LoaderScreen() {
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const rotateAnim = useRef(new Animated.Value(0)).current;
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (project?.submittedAt) {
       // Clear any existing timer
@@ -38,7 +38,7 @@ export default function LoaderScreen() {
       
       // Then update every second
       timerRef.current = setInterval(() => {
-        const newElapsed = Math.max(0, Math.floor((Date.now() - project.submittedAt) / 1000));
+        const newElapsed = Math.max(0, Math.floor((Date.now() - (project.submittedAt ?? Date.now())) / 1000));
         setElapsedSeconds(newElapsed);
       }, 1000);
       

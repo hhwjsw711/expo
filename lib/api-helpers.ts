@@ -239,7 +239,7 @@ export async function uploadFileToConvex(
     headers: {
       "Content-Type": contentType || "application/octet-stream",
     },
-    body: bytes,
+    body: bytes as any,
   });
 
   if (!uploadResponse.ok) {
@@ -316,7 +316,7 @@ export async function uploadMediaFiles(
         const uploadResponse = await fetch(uploadUrl, {
           method: "POST",
           headers: { "Content-Type": contentType },
-          body: bytes,
+          body: bytes as any,
         });
 
         if (!uploadResponse.ok) {
@@ -434,7 +434,7 @@ export async function uploadMediaFilesToR2(
           headers: {
             "Content-Type": fileMetadata[i].contentType,
           },
-          body: bytes,
+          body: bytes as any,
         });
 
         if (!uploadResponse.ok) {
@@ -517,14 +517,14 @@ export async function uploadSingleMediaFileToR2(
       uploadResponse = await fetch(uploadInfo.uploadUrl, {
         method: "POST",
         headers: { "Content-Type": contentType },
-        body: bytes,
+        body: bytes as any,
       });
     } catch (postError) {
       console.log(`[R2-single] POST failed, retrying...`);
       uploadResponse = await fetch(uploadInfo.uploadUrl, {
         method: "POST",
         headers: { "Content-Type": contentType },
-        body: bytes,
+        body: bytes as any,
       });
     }
 
@@ -823,7 +823,7 @@ export function debounce<T extends (...args: any[]) => any>(
   func: T,
   wait: number
 ): (...args: Parameters<T>) => void {
-  let timeout: NodeJS.Timeout | null = null;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
 
   return (...args: Parameters<T>) => {
     if (timeout) clearTimeout(timeout);

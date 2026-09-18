@@ -27,6 +27,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMutation, useAction, useQuery, useConvex } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import * as Clipboard from 'expo-clipboard';
 import {
   createAudioPlayer,
@@ -683,7 +684,7 @@ export default function ChatComposerScreen() {
           })
           .filter((item: any): item is typeof mediaUris[0] => item !== null);
         
-        setMediaUris(mediaFromProject);
+        setMediaUris(mediaFromProject as any);
       }
       
       // Sync voice speed from project (so UI reflects the actual configured speed)
@@ -947,7 +948,7 @@ export default function ChatComposerScreen() {
             inputRef.current?.focus();
           }, 500);
         });
-        return () => task.cancel();
+        return () => clearTimeout(task);
       }
     }, [projectId, messages.length])
   );
@@ -1149,7 +1150,7 @@ export default function ChatComposerScreen() {
             r2Url: r2Result.r2Url,
             r2Key: r2Result.r2Key,
             contentType,
-            storageId: r2Result.storageId,
+            storageId: r2Result.storageId as Id<"_storage"> | undefined,
           }),
           3,
           2000
@@ -1294,7 +1295,7 @@ export default function ChatComposerScreen() {
         }));
         
         currentProjectId = await createChatProject({
-          userId,
+          userId: userId ?? undefined,
           files: uploadedMedia.map(m => m.storageId),
           fileMetadata,
           thumbnail: uploadedMedia[0]?.storageId,
@@ -1308,7 +1309,7 @@ export default function ChatComposerScreen() {
         // Update prompt
         if (userInput) {
           await updateChatProjectPrompt({
-            projectId: currentProjectId,
+            projectId: currentProjectId as Id<"projects">,
             prompt: userInput,
           });
         }
@@ -1326,7 +1327,7 @@ export default function ChatComposerScreen() {
         }
         
         await addChatMessage({
-          projectId: currentProjectId,
+          projectId: currentProjectId as Id<"projects">,
           role: 'user',
           content: userInput || '',
           messageIndex: userMessageCount + 1,
@@ -1369,7 +1370,7 @@ export default function ChatComposerScreen() {
 
           if (filesToAdd.length > 0 && fileMetadataToAdd.length > 0) {
             await addFilesToProject({
-              projectId: currentProjectId,
+              projectId: currentProjectId as Id<"projects">,
               files: filesToAdd as any,
               fileMetadata: fileMetadataToAdd as any,
             });
@@ -1423,10 +1424,10 @@ export default function ChatComposerScreen() {
       // Generate script (saveAndNotify: true means backend saves script and sends notification)
       // Backend will wait for captions from the captioning pipeline if not yet available.
       const result = await generateChatScript({
-        projectId: currentProjectId,
+        projectId: currentProjectId as Id<"projects">,
         conversationHistory,
         cachedMediaDescriptions: cachedDescriptions,
-        newMediaFiles: newMediaFilesForCaptioning,
+        newMediaFiles: newMediaFilesForCaptioning as any,
         isFirstMessage: !hasScript,
         isNewMedia,
         newMediaCount,

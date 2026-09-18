@@ -165,7 +165,7 @@ function ComposerScreen() {
           })
           .filter((item: any): item is typeof mediaUris[0] => item !== null);
         
-        setMediaUris(mediaFromProject);
+        setMediaUris(mediaFromProject as any);
         console.log('[composer] Loaded', mediaFromProject.length, 'media files from draft');
         
         // If we have media, go straight to description step

@@ -187,7 +187,7 @@ export default function ResultScreen() {
           createdAt: Date.now(),
           status: 'processing',
           projectId: result.newProjectId,
-          thumbnailUrl: project.thumbnailUrl,
+          thumbnailUrl: project.thumbnailUrl ?? undefined,
         });
 
         // Navigate to feed to see the new generating video

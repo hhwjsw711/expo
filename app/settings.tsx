@@ -891,7 +891,7 @@ export default function SettingsScreen() {
                           styles.voiceOption,
                           user.selectedVoiceId === user.elevenlabsVoiceId && styles.voiceOptionSelected,
                         ]}
-                        onPress={() => handleSelectVoice(user.elevenlabsVoiceId)}
+                        onPress={() => handleSelectVoice(user.elevenlabsVoiceId ?? '')}
                         activeOpacity={0.7}
                       >
                         <View style={styles.voiceOptionContent}>
@@ -905,7 +905,7 @@ export default function SettingsScreen() {
                         </View>
                         <TouchableOpacity
                           style={styles.previewButton}
-                          onPress={() => playVoicePreview(clonePreviewStorageId, user.elevenlabsVoiceId)}
+                          onPress={() => playVoicePreview(clonePreviewStorageId, user.elevenlabsVoiceId ?? '')}
                           activeOpacity={0.7}
                           disabled={isLoadingPreview}
                         >

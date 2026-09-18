@@ -90,7 +90,7 @@ export default function ScriptReviewScreen() {
       }
     }
     if (project?.renderMode) {
-      setRenderMode(project.renderMode);
+      setRenderMode(project.renderMode as "remotion" | "ffmpeg");
     }
     if (project?.voiceSpeed) {
       setVoiceSpeed(project.voiceSpeed);
@@ -230,7 +230,7 @@ export default function ScriptReviewScreen() {
         createdAt: project.createdAt || Date.now(),
         status: 'processing',
         projectId: projectId,
-        thumbnailUrl: project.thumbnailUrl,
+        thumbnailUrl: project.thumbnailUrl ?? undefined,
       });
 
       // NOW show the alert and navigate
@@ -306,7 +306,7 @@ export default function ScriptReviewScreen() {
           createdAt: project.createdAt || Date.now(),
           status: 'processing',
           projectId: projectId,
-          thumbnailUrl: project.thumbnailUrl,
+          thumbnailUrl: project.thumbnailUrl ?? undefined,
         });
       }
 
@@ -500,7 +500,7 @@ export default function ScriptReviewScreen() {
                 </View>
               ) : (
                 <View testID="scriptContainer" style={styles.scriptContainer}>
-                  <Text style={styles.scriptText}>{editedScript || (project.script ? project.script.replace(/\?\?\?/g, "?") : '')}</Text>
+                  <Text style={styles.scriptText}>{editedScript || (project?.script ? project.script.replace(/\?\?\?/g, "?") : '')}</Text>
                 </View>
               )}
             </View>

@@ -26,10 +26,11 @@ export function useVoicePreview() {
     cachedSoundsRef.current = cachedSounds;
   }, [cachedSounds]);
 
-  const cleanupPlayer = useCallback((player: AudioPlayer) => {
+  const cleanupPlayer = useCallback((player: AudioPlayer | null) => {
     try {
-      player.removeAllListeners();
-      player.remove();
+      // SDK 58: removeAllListeners may not exist on AudioPlayer; use safe cast
+      (player as any)?.removeAllListeners?.();
+      (player as any)?.remove?.();
     } catch (e) {
       console.error('Error cleaning up player:', e);
     }

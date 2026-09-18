@@ -16,6 +16,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import Colors from '@/constants/colors';
 import { Fonts } from '@/constants/typography';
 import { useApp } from '@/contexts/AppContext';
@@ -164,7 +165,7 @@ export default function VoiceConfigModal({
       // This will create the ElevenLabs voice clone on the backend
       await updateProfile({
         userId,
-        voiceRecordingStorageId: voiceStorageId,
+        voiceRecordingStorageId: voiceStorageId as Id<"_storage">,
       });
       
       console.log('[VoiceConfigModal] Voice saved successfully!');

@@ -11,7 +11,7 @@ Notifications.setNotificationHandler({
     shouldShowAlert: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
-  }),
+  } as any),
 });
 
 // ─── Polling configuration: exponential backoff ─────────────────────────────
@@ -41,7 +41,7 @@ export function useVideoPolling() {
   const SEQUENCE_MAX_RETRIES = 2;
   const convex = useConvex();
   const createSequence = useAction(api.render.createSequence);
-  const pollTimer = useRef<NodeJS.Timeout | null>(null);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPollingRef = useRef(false);
 
   useEffect(() => {
@@ -96,7 +96,7 @@ export function useVideoPolling() {
           if (project.status === 'failed') {
             if (video.status !== 'failed') {
               console.log('[VideoPolling] ❌ Backend marked as FAILED:', video.id, 'Error:', project.error);
-              updateVideoStatus(video.id, 'failed', undefined, project.error, project.thumbnailUrl);
+              updateVideoStatus(video.id, 'failed', undefined, project.error ?? undefined, project.thumbnailUrl ?? undefined);
               anyStateChanged = true;
               // Note: failure notification is handled by backend push notification (sendVideoFailedNotification in tasks.ts)
             }
@@ -110,7 +110,7 @@ export function useVideoPolling() {
                 // If not already preparing, mark as preparing first
                 if (video.status !== 'preparing') {
                   console.log('[VideoPolling] ⏳ Video URL exists, verifying CDN accessibility:', video.id);
-                  updateVideoStatus(video.id, 'preparing', project.renderedVideoUrl, undefined, project.thumbnailUrl);
+                  updateVideoStatus(video.id, 'preparing', project.renderedVideoUrl, undefined, project.thumbnailUrl ?? undefined);
                 }
 
                 // Verify the video URL is actually accessible from client
@@ -124,7 +124,7 @@ export function useVideoPolling() {
                     console.log('[VideoPolling] ✅ Video READY and VERIFIED:', video.id);
                     console.log('[VideoPolling] Video URL:', project.renderedVideoUrl);
                     console.log('[VideoPolling] Thumbnail URL:', project.thumbnailUrl);
-                    updateVideoStatus(video.id, 'ready', project.renderedVideoUrl, undefined, project.thumbnailUrl);
+                    updateVideoStatus(video.id, 'ready', project.renderedVideoUrl, undefined, project.thumbnailUrl ?? undefined);
                     anyStateChanged = true;
                     // Note: push notification is handled by backend (sendVideoReadyNotification in tasks.ts)
                   } else {
@@ -158,7 +158,7 @@ export function useVideoPolling() {
 
             // Keep as processing - don't mark as failed even if action throws
             if (video.status === 'pending') {
-              updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl);
+              updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl ?? undefined);
             }
 
             // Step 1: Create sequence only (sandbox + upload + Claude + timeline.json)
@@ -268,14 +268,14 @@ export function useVideoPolling() {
             if (project.timelineJson) {
               if (video.status !== 'ready') {
                 console.log('[VideoPolling] ✅ Sequence ready for preview:', video.id);
-                updateVideoStatus(video.id, 'ready', undefined, undefined, project.thumbnailUrl);
+                updateVideoStatus(video.id, 'ready', undefined, undefined, project.thumbnailUrl ?? undefined);
                 anyStateChanged = true;
               }
             } else {
               // Sequence still being created (Claude editing etc.)
               if (video.status === 'pending' || video.status === 'failed') {
                 console.log('[VideoPolling] ⏳ Sequence being created, waiting for user to render:', video.id);
-                updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl);
+                updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl ?? undefined);
                 anyStateChanged = true;
               }
             }
@@ -290,7 +290,7 @@ export function useVideoPolling() {
             // This also recovers videos from 'failed' status if backend is actually still working
             if (video.status === 'pending' || video.status === 'failed') {
               console.log('[VideoPolling] ⏳ Video generating (recovering from incorrect failed status):', video.id, 'Backend status:', project.status);
-              updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl);
+              updateVideoStatus(video.id, 'processing', undefined, undefined, project.thumbnailUrl ?? undefined);
               anyStateChanged = true;
             }
           }
