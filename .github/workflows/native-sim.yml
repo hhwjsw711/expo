@@ -110,7 +110,7 @@ jobs:
           path: |
             ~/.npm
             ~/Library/Caches/CocoaPods
-          key: native-sim-${{ runner.os }}-${{ hashFiles('**/package-lock.json', '**/yarn.lock', '**/pnpm-lock.yaml') }}
+          key: native-sim-${{ runner.os }}-${{ hashFiles('**/package-lock.json', '**/yarn.lock', '**/pnpm-lock.yaml', '**/bun.lock', '**/bun.lockb') }}
           restore-keys: native-sim-${{ runner.os }}-
 
       - name: Install JS dependencies
@@ -118,11 +118,15 @@ jobs:
         if: inputs.mode != 'app'
         run: |
           set -euo pipefail
-          if [ -f pnpm-lock.yaml ]; then
+          if [ -f bun.lock ] || [ -f bun.lockb ]; then
+            curl -fsSL https://bun.sh/install | bash
+            export BUN_INSTALL="$HOME/.bun"
+            export PATH="$BUN_INSTALL/bin:$PATH"
+            bun install --frozen-lockfile
+          elif [ -f pnpm-lock.yaml ]; then
             corepack enable && pnpm install --frozen-lockfile
           elif [ -f yarn.lock ]; then
             corepack enable
-            # --immutable is Yarn 2+; Yarn 1 wants --frozen-lockfile.
             yarn install --immutable || yarn install --frozen-lockfile
           elif [ -f package-lock.json ]; then
             npm ci
