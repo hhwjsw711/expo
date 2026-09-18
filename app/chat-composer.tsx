@@ -1,4 +1,4 @@
-import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
+﻿import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { ArrowLeft, Plus, Send, X, Check, Info, Copy, MessageSquare, Volume2, Mic, Gauge, MoreHorizontal, VolumeX, RotateCcw, Pencil } from 'lucide-react-native';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
@@ -16,7 +16,7 @@ import {
   Pressable,
   Animated,
   ActionSheetIOS,
-  InteractionManager,
+
 } from 'react-native';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
@@ -834,7 +834,7 @@ export default function ChatComposerScreen() {
   }, [existingProject?.fileUrls, projectId]);
   
   // Refresh message media URLs when missing or potentially expired.
-  // Same rationale as above — avoid frequent URL swaps but handle expiration.
+  // Same rationale as above 鈥?avoid frequent URL swaps but handle expiration.
   useEffect(() => {
     if (!existingMessages) return;
     
@@ -941,7 +941,7 @@ export default function ChatComposerScreen() {
       if (!projectId && !hasAutoOpenedPicker.current && messages.length === 0) {
         hasAutoOpenedPicker.current = true;
         // Wait for screen transition animation to fully complete
-        const task = InteractionManager.runAfterInteractions(() => {
+        const task = setTimeout(() => {
           // Additional delay to ensure screen is fully rendered
           setTimeout(() => {
             inputRef.current?.focus();
@@ -1858,8 +1858,8 @@ export default function ChatComposerScreen() {
         });
 
         Alert.alert(
-          '🎬 Generation Started!',
-          'Your video is being created! Feel free to close the app — we\'ll send you a notification when it\'s ready.',
+          '馃幀 Generation Started!',
+          'Your video is being created! Feel free to close the app 鈥?we\'ll send you a notification when it\'s ready.',
           [{
             text: 'Got it!',
             style: 'default',
@@ -1953,8 +1953,8 @@ export default function ChatComposerScreen() {
       });
       
       Alert.alert(
-        '🎬 Generation Started!',
-        'Your video is being created! Feel free to close the app — we\'ll send you a notification when it\'s ready.',
+        '馃幀 Generation Started!',
+        'Your video is being created! Feel free to close the app 鈥?we\'ll send you a notification when it\'s ready.',
         [{
           text: 'Got it!',
           style: 'default',
@@ -2070,7 +2070,7 @@ export default function ChatComposerScreen() {
       // Scroll to end to ensure Generate/Keep Clips Order buttons are visible for measurement
       scrollViewRef.current?.scrollToEnd({ animated: false });
       // Wait for the script bubble to render, then measure and show immediately
-      InteractionManager.runAfterInteractions(() => {
+      setTimeout(() => {
         requestAnimationFrame(() => {
           measureSpotlightRects();
           setShowChatOnboarding(true);
@@ -2096,7 +2096,7 @@ export default function ChatComposerScreen() {
     Keyboard.dismiss();
     // Scroll to end to ensure Generate/Keep Clips Order buttons are visible for measurement
     scrollViewRef.current?.scrollToEnd({ animated: false });
-    InteractionManager.runAfterInteractions(() => {
+    setTimeout(() => {
       requestAnimationFrame(() => {
         // Measure using latest ref (onboardingUsesLatest is now true)
         const bubbleRef = latestScriptBubbleRef;
@@ -3111,7 +3111,7 @@ const styles = StyleSheet.create({
     opacity: 0,
   },
   processingOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'center',
     alignItems: 'center',

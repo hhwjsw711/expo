@@ -1,4 +1,4 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
+﻿import { useLocalSearchParams, useRouter } from 'expo-router';
 import { X, Download, Mic, Music, Subtitles, MessageSquare, Loader2, Play, Pause, Info, Scissors, Clapperboard } from 'lucide-react-native';
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
@@ -14,7 +14,6 @@ import {
   Image,
   Dimensions,
   GestureResponderEvent,
-  InteractionManager,
   LayoutChangeEvent,
 } from 'react-native';
 // Lazy-load native-only modules to prevent web crashes
@@ -49,7 +48,7 @@ import { getScreenDimensions } from '@/lib/dimensions';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = getScreenDimensions();
 
-// Match client-side watermark position to FFmpeg's `overlay=W-w-160:114` on a 1080×1920 canvas
+// Match client-side watermark position to FFmpeg's `overlay=W-w-160:114` on a 1080脳1920 canvas
 // by accounting for contentFit="cover" scaling and crop offset.
 const VIDEO_W = 1080;
 const VIDEO_H = 1920;
@@ -66,7 +65,7 @@ const ICON_SHADOW = {
   elevation: 8,
 };
 
-// ─── Sequence Preview Types & Helpers ──────────────────────────────────────
+// 鈹€鈹€鈹€ Sequence Preview Types & Helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 interface SeqSegment {
   id: string;
@@ -167,7 +166,7 @@ const getGenerationPhase = (project: any): GenerationPhase => {
   }
   
   // Priority 2: Check if still preparing media assets (FAL animations, TTS, music)
-  // Music is optional — generation may fail, but we can still render without it
+  // Music is optional 鈥?generation may fail, but we can still render without it
   const hasMediaAssets = project.audioUrl && project.videoUrls && project.videoUrls.length > 0;
   if (project.animationStatus === 'in_progress' || !hasMediaAssets) {
     return 'preparing_media';
@@ -316,7 +315,7 @@ export default function VideoPreviewScreen() {
   
   // Calculate if we're still generating based on live project data
   // NOTE: "rendering" status covers BOTH createSequence AND renderFinalVideo.
-  // If timelineJson + sandboxId already exist, createSequence is done —
+  // If timelineJson + sandboxId already exist, createSequence is done 鈥?
   // that's not "generating", it's "ready for preview/render".
   const hasSequenceReady = !!(project?.timelineJson && project?.sandboxId);
   const isGenerating = isGeneratingParam && !project?.renderedVideoUrl && !hasSequenceReady && project?.status !== 'completed';
@@ -364,7 +363,7 @@ export default function VideoPreviewScreen() {
     outputRange: ['0deg', '360deg'],
   });
 
-  // Render hooks — declared early so handleRender can reference them
+  // Render hooks 鈥?declared early so handleRender can reference them
   const renderFinalVideo = useAction(api.render.renderFinalVideo);
   const [renderState, setRenderState] = useState<'idle' | 'rendering' | null>(null);
   const renderTriggeredRef = useRef(false);
@@ -380,7 +379,7 @@ export default function VideoPreviewScreen() {
     }
 
     // If currently rendering the FINAL video (user tapped Render), show rendering state.
-    // We detect this by renderProgress.step NOT being "sequence created" —
+    // We detect this by renderProgress.step NOT being "sequence created" 鈥?
     // because "sequence created" means createSequence just finished and we're idle.
     // Also require that we're NOT in the idle state already (don't override user's Render tap).
     if (project.status === 'rendering' && project.sandboxId && renderState === 'rendering') {
@@ -388,7 +387,7 @@ export default function VideoPreviewScreen() {
     }
 
     // If sequence is ready (timelineJson + sandboxId) but not yet rendered, show idle render state.
-    // This applies regardless of status — createSequence sets status to "rendering" but sequence is ready.
+    // This applies regardless of status 鈥?createSequence sets status to "rendering" but sequence is ready.
     if (project.timelineJson && project.sandboxId && project.status !== 'failed') {
       setRenderState('idle');
       return;
@@ -425,7 +424,7 @@ export default function VideoPreviewScreen() {
       });
   }, [projectId, renderFinalVideo]);
 
-  // ─── Shared state (moved early for sequence preview references) ──────────
+  // 鈹€鈹€鈹€ Shared state (moved early for sequence preview references) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
@@ -448,7 +447,7 @@ export default function VideoPreviewScreen() {
     }, 3000);
   }, []);
 
-  // ─── Sequence Preview State ───────────────────────────────────────────────
+  // 鈹€鈹€鈹€ Sequence Preview State 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // When sequence is ready (timelineJson + sandboxId) but not yet rendered,
   // we play a client-side preview using the original video clips + audio tracks.
 
@@ -525,7 +524,7 @@ export default function VideoPreviewScreen() {
           duration: s.duration,
         }));
 
-        // Build clip URL map: video0.mp4 → videoUrls[0], video1.mp4 → videoUrls[1], etc.
+        // Build clip URL map: video0.mp4 鈫?videoUrls[0], video1.mp4 鈫?videoUrls[1], etc.
         // Also includes original uploaded videos appended after animated ones.
         const urlMap: Record<string, string> = {};
         const videoUrls = data.videoUrls || [];
@@ -1024,7 +1023,7 @@ export default function VideoPreviewScreen() {
   const musicSoundRef = useRef<AudioPlayer | null>(null);
   const audioLoadedRef = useRef({ voice: false, music: false });
   const [audioReady, setAudioReady] = useState(false);
-  // One-time source switch: rendered video → base video (during initial load)
+  // One-time source switch: rendered video 鈫?base video (during initial load)
   const pendingSeekAfterSourceSwitch = useRef<{ time: number; wasPlaying: boolean } | null>(null);
   const [isSourceSwitching, setIsSourceSwitching] = useState(false);
   const isSourceSwitchingRef = useRef(false);
@@ -1086,7 +1085,7 @@ export default function VideoPreviewScreen() {
   }, [projectId, isGenerating]);
 
   // Load separate audio tracks for client-side preview mixing
-  // Skip in sequence preview mode — it has its own audio loading logic
+  // Skip in sequence preview mode 鈥?it has its own audio loading logic
   useEffect(() => {
     if (!previewAssets || isSequencePreview) return;
     let cancelled = false;
@@ -1264,7 +1263,7 @@ export default function VideoPreviewScreen() {
     }
   }, [voiceoverEnabled, musicEnabled, videoPlayer, previewAssets?.musicVolume]);
 
-  // One-time switch: swap rendered video → base video while thumbnail is still visible.
+  // One-time switch: swap rendered video 鈫?base video while thumbnail is still visible.
   // Waits for audioReady so everything starts together after the switch.
   useEffect(() => {
     if (!previewAssets?.baseVideoUrl || !audioReady || !videoPlayer || switchedToBaseRef.current || isGenerating) return;
@@ -1302,12 +1301,12 @@ export default function VideoPreviewScreen() {
       try { videoPlayer.volume = origVol; } catch (_) {}
       syncAudioPlayState(videoPlayer.playing);
     } else if (isDefaultVariant) {
-      // Still on rendered video, all defaults — use baked audio
+      // Still on rendered video, all defaults 鈥?use baked audio
       videoPlayer.muted = false;
       voiceSoundRef.current?.pause();
       musicSoundRef.current?.pause();
     } else {
-      // Still on rendered video but user toggled before base loaded — mute & use separate audio
+      // Still on rendered video but user toggled before base loaded 鈥?mute & use separate audio
       // Must stay muted because the rendered video's audio is a pre-mixed composite (voice + music + original sound)
       // that cannot be decomposed; unmuting would cause double audio with the separate tracks
       videoPlayer.muted = true;
@@ -1559,7 +1558,7 @@ export default function VideoPreviewScreen() {
     if (videoPlayer) {
       videoPlayer.pause();
     }
-    InteractionManager.runAfterInteractions(() => {
+    setTimeout(() => {
       requestAnimationFrame(() => {
         measureOnboardingRects();
         setShowVideoPreviewOnboarding(true);
@@ -1575,7 +1574,7 @@ export default function VideoPreviewScreen() {
     // Wait for audio tracks to finish loading
     if (!audioReady && projectId) return;
 
-    // Wait for the base-video switch to finish (isSourceSwitching goes true → false)
+    // Wait for the base-video switch to finish (isSourceSwitching goes true 鈫?false)
     // Check both the ref (for synchronous updates within same effect batch) and state (for re-renders)
     if (isSourceSwitching || isSourceSwitchingRef.current) return;
 
@@ -1787,7 +1786,7 @@ export default function VideoPreviewScreen() {
           console.log('[Download] Copy complete, file ready at:', fileUriToSave);
         }
 
-        // Use saveToLibraryAsync — simpler than createAssetAsync, doesn't require
+        // Use saveToLibraryAsync 鈥?simpler than createAssetAsync, doesn't require
         // the asset to remain accessible after saving.
         console.log('[Download] Calling saveToLibraryAsync...');
         await MediaLibrary.saveToLibraryAsync(fileUriToSave);
@@ -1888,7 +1887,7 @@ export default function VideoPreviewScreen() {
 
   // If no video URI and not generating, show render-ready or loading state
   if (!videoUri && !isGenerating) {
-    // ── Sequence preview state: client-side playback of original clips ──
+    // 鈹€鈹€ Sequence preview state: client-side playback of original clips 鈹€鈹€
     if (renderState === 'idle') {
       return (
         <View style={styles.container}>
@@ -2057,7 +2056,7 @@ export default function VideoPreviewScreen() {
       );
     }
 
-    // ── Rendering state: renderFinalVideo in progress ──
+    // 鈹€鈹€ Rendering state: renderFinalVideo in progress 鈹€鈹€
     if (renderState === 'rendering') {
       return (
         <View style={styles.container}>
@@ -2092,7 +2091,7 @@ export default function VideoPreviewScreen() {
       );
     }
 
-    // ── Default: loading state (Convex query may still resolve) ──
+    // 鈹€鈹€ Default: loading state (Convex query may still resolve) 鈹€鈹€
     return (
       <View style={styles.container}>
         <View style={styles.fullscreenVideo}>
@@ -2556,7 +2555,7 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.medium,
     color: Colors.white,
   },
-  // ─── Sequence Preview Styles ──────────────────────────────────────────
+  // 鈹€鈹€鈹€ Sequence Preview Styles 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   seqCaptionOverlay: {
     position: 'absolute',
     bottom: 120,

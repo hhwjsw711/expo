@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+﻿import { useRouter } from 'expo-router';
 import { Loader2, AlertCircle, FileText, Zap, Clock, Calendar, Plus , Trash2, Clapperboard } from 'lucide-react-native';
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
@@ -588,7 +588,7 @@ export default function FeedTab() {
             });
             releaseNavigationLock(lockKey, 750);
           } else if (item.status === 'ready' && (!item.uri || item.uri.length === 0)) {
-            // Sequence is ready but video hasn't been rendered yet — go to video-preview for render
+            // Sequence is ready but video hasn't been rendered yet 鈥?go to video-preview for render
             if (item.projectId) {
               router.push({
                 pathname: '/video-preview',
@@ -1239,11 +1239,11 @@ const styles = StyleSheet.create({
     bottom: 0,
   },
   actionSheetWrapper: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex: 999,
   },
   actionSheetBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.3)',
   },
   actionSheetContainer: {
