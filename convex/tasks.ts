@@ -1224,13 +1224,15 @@ export const saveEditorChanges = mutation({
 
       // 2. Create a new project fork for re-rendering.
       //    The fork inherits the revision it was forked from; its own history
-      //    table starts empty and fills from the next edit onwards.
+      //    table starts with a single row mirroring the parent's latest save
+      //    so that getTimelineHistory(forkId) returns a non-empty lineage.
       const newProjectId = await ctx.db.insert("projects", {
         userId: original.userId,
         prompt: original.prompt,
         files: original.files,
         fileMetadata: original.fileMetadata,
         thumbnail: original.thumbnail,
+        thumbnailUrl: original.thumbnailUrl,
         createdAt: Date.now(),
         status: "processing",
         script: original.script,
@@ -1241,6 +1243,7 @@ export const saveEditorChanges = mutation({
         timelineJson,
         timelineRevision: check.nextRevision,
         assContent: assContent ?? original.assContent,
+        mediaDescriptions: original.mediaDescriptions,
         voiceSpeed: original.voiceSpeed,
         voiceVolume: original.voiceVolume,
         musicVolume: original.musicVolume,
@@ -1253,12 +1256,27 @@ export const saveEditorChanges = mutation({
         renderError: undefined,
       });
 
+      // 2b. Seed the fork's timeline history so its lineage is complete.
+      //     Without this, getTimelineHistory(forkId) returns empty despite
+      //     fork.timelineRevision being N+1, breaking audit/rollback.
+      await ctx.db.insert("timelines", {
+        projectId: newProjectId,
+        revision: check.nextRevision,
+        timelineJson,
+        source: "user",
+        note: "fork from parent",
+        createdAt: Date.now(),
+      });
+
       // 3. Persist the edit manifest (op stream) for this revision.
       //    Keyed by (projectId, nextRevision) so the lineage is queryable.
+      //    Write to BOTH the original project and the fork so each has
+      //    its own auditable operation history.
       if (operationsJson) {
         try {
           const parsed = JSON.parse(operationsJson);
           if (Array.isArray(parsed)) {
+            // Original project manifest (upsert)
             const existing = await ctx.db
               .query("editManifests")
               .withIndex("by_project_revision", (q) => q.eq("projectId", projectId).eq("revision", check.nextRevision))
@@ -1274,6 +1292,14 @@ export const saveEditorChanges = mutation({
                 createdAt: Date.now(),
               });
             }
+            // Fork project manifest (always insert — fork is new)
+            await ctx.db.insert("editManifests", {
+              projectId: newProjectId,
+              revision: check.nextRevision,
+              operationsJson,
+              opCount: parsed.length,
+              createdAt: Date.now(),
+            });
           }
         } catch {
           // manifest is best-effort audit; don't fail the save over a bad op log
