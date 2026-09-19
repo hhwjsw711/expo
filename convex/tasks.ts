@@ -903,48 +903,6 @@ export const updateProjectKeepOrder = mutation({
   },
 });
 
-// ─── Update Project Render Mode ─────────────────────────────────────────────
-export const updateProjectRenderMode = mutation({
-  args: {
-    id: v.id("projects"),
-    renderMode: v.string(),
-  },
-  handler: async (ctx, { id, renderMode }) => {
-    await requireProjectOwnership(ctx, id);
-    await ctx.db.patch(id, { renderMode });
-    return { id };
-  },
-});
-
-// ─── Update Project Audio Settings ──────────────────────────────────────────
-export const updateProjectAudioSettings = mutation({
-  args: {
-    id: v.id("projects"),
-    voiceVolume: v.optional(v.number()),
-    musicVolume: v.optional(v.number()),
-    originalSoundVolume: v.optional(v.number()),
-    includeVoice: v.optional(v.boolean()),
-    includeMusic: v.optional(v.boolean()),
-    includeCaptions: v.optional(v.boolean()),
-    includeOriginalSound: v.optional(v.boolean()),
-    keepOrder: v.optional(v.boolean()),
-  },
-  handler: async (ctx, args) => {
-    await requireProjectOwnership(ctx, args.id);
-    const updates: any = {};
-    if (args.voiceVolume !== undefined) updates.voiceVolume = args.voiceVolume;
-    if (args.musicVolume !== undefined) updates.musicVolume = args.musicVolume;
-    if (args.originalSoundVolume !== undefined) updates.originalSoundVolume = args.originalSoundVolume;
-    if (args.includeVoice !== undefined) updates.includeVoice = args.includeVoice;
-    if (args.includeMusic !== undefined) updates.includeMusic = args.includeMusic;
-    if (args.includeCaptions !== undefined) updates.includeCaptions = args.includeCaptions;
-    if (args.includeOriginalSound !== undefined) updates.includeOriginalSound = args.includeOriginalSound;
-    if (args.keepOrder !== undefined) updates.keepOrder = args.keepOrder;
-    await ctx.db.patch(args.id, updates);
-    return { id: args.id };
-  },
-});
-
 // ─── Regenerate Project Editing ─────────────────────────────────────────────
 // Creates a new project sharing the source's media assets (voiceover, music,
 // animated clips) and asks the pipeline for a FRESH Claude edit plan.

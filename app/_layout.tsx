@@ -229,8 +229,6 @@ function AppContent() {
       <Stack.Screen name="chat-composer" options={{ gestureEnabled: false }} />
       <Stack.Screen name="video-preview" options={{ gestureEnabled: false }} />
       <Stack.Screen name="video-editor" options={{ gestureEnabled: false, animation: 'slide_from_right' }} />
-      <Stack.Screen name="loader" options={{ gestureEnabled: false }} />
-      <Stack.Screen name="result" options={{ gestureEnabled: false, animation: 'none' }} />
       <Stack.Screen 
         name="settings" 
         options={{ 
