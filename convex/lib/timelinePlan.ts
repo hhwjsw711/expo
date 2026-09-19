@@ -193,3 +193,81 @@ export function resolveTimelineRevision(
   }
   return { ok: true, nextRevision: current + 1 };
 }
+
+// ─── Ingestion normalization ─────────────────────────────────────────────────
+
+/**
+ * Canonical defaults for a complete timeline plan.
+ *
+ * The audio/subtitles blocks are the single source of truth for EVERY
+ * consumer (sequence preview, completed-video preview, generate-composition).
+ * A missing field sends the preview and the render down DIFFERENT fallback
+ * chains — the preview falls back to project-level fields, the render to
+ * hardcoded constants — which is a WYSIWYG divergence. Normalization at
+ * ingestion (Branch A: after the Claude agent produces the plan; Branch B:
+ * inside saveEditorChanges, where it is a no-op because the editor always
+ * writes complete blocks) guarantees stored timelines are always
+ * self-sufficient and every fallback path is dead code.
+ *
+ * Values mirror generate-composition.ts exactly (the render is the
+ * ground truth the preview must match).
+ */
+const CANONICAL_AUDIO = {
+  voiceFile: "audio.mp3",
+  voiceVolume: 1.0,
+  playbackRate: 1.0,
+  musicFile: "music.mp3",
+  musicVolume: 0.1,
+  originalSoundVolume: 0.0,
+  includeMusic: true,
+  includeVoice: true,
+  includeOriginalSound: false,
+};
+
+const CANONICAL_SUBTITLES = {
+  file: "subtitles.srt",
+  adjustForPlaybackRate: true,
+  includeCaptions: true,
+};
+
+/**
+ * Fill missing audio/subtitles fields with the canonical defaults, without
+ * overriding anything the plan explicitly sets. When `availableFiles` (the
+ * real sandbox media listing) is provided, enabled tracks whose file was
+ * never downloaded are DISABLED instead of left enabled — a defaulted or
+ * explicit track pointing at a missing file would crash the Remotion render
+ * (staticFile 404), and validateTimelinePlan would reject the plan outright.
+ * Mirrors the V2 prompt rule: "if the file is missing, set includeX false".
+ */
+export function normalizeTimelinePlan(
+  plan: any,
+  availableFiles?: string[]
+): any {
+  const out: any = { ...plan };
+  out.audio = { ...CANONICAL_AUDIO, ...(plan?.audio ?? {}) };
+  out.subtitles = { ...CANONICAL_SUBTITLES, ...(plan?.subtitles ?? {}) };
+
+  if (availableFiles && availableFiles.length > 0) {
+    if (out.audio.includeVoice && !availableFiles.includes(out.audio.voiceFile)) {
+      out.audio.includeVoice = false;
+    }
+    if (out.audio.includeMusic && !availableFiles.includes(out.audio.musicFile)) {
+      out.audio.includeMusic = false;
+    }
+    if (out.subtitles.includeCaptions && !availableFiles.includes(out.subtitles.file)) {
+      out.subtitles.includeCaptions = false;
+    }
+  }
+
+  // durationInSeconds is optional in the validator, but completeness is the
+  // ingestion contract — fill it from the segment sum when absent.
+  const declared = Number(out.durationInSeconds);
+  if (!Number.isFinite(declared) || declared <= 0) {
+    const sum = (out.segments ?? []).reduce(
+      (s: number, seg: any) => s + (Number(seg?.duration) || 0),
+      0
+    );
+    out.durationInSeconds = parseFloat(sum.toFixed(4));
+  }
+  return out;
+}

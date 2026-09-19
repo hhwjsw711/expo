@@ -7,7 +7,7 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { prompts } from "./prompts";
 import { requireAuth } from "./auth";
-import { validateTimelinePlan } from "./lib/timelinePlan";
+import { validateTimelinePlan, normalizeTimelinePlan } from "./lib/timelinePlan";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -394,6 +394,7 @@ export const createSequence = action({
   }> => {
     const authUserId = await requireAuth(ctx);
     console.log("[sequence] starting for project:", projectId);
+    const sequenceStartMs = Date.now();
 
     // Verify project ownership
     const projectCheck = await ctx.runQuery(api.tasks.getProject, { id: projectId });
@@ -536,11 +537,14 @@ export const createSequence = action({
         await sb.files.write("/home/user/system-prompt.txt", prompts.videoEditor.systemPromptV2);
         await sb.files.write("/home/user/prompt.txt", videoEditorPrompt);
 
+        console.log("[sequence] executing claude-agent.ts (timeout 360s), elapsed:", Date.now() - sequenceStartMs, "ms");
+        const claudeStartMs = Date.now();
         const claudeResult = await sb.commands.run("bun run claude-agent.ts", {
           cwd: "/home/user",
           timeoutMs: 360000,
           requestTimeoutMs: 360000,
         });
+        console.log("[sequence] claude-agent finished in", Date.now() - claudeStartMs, "ms, exit:", claudeResult.exitCode);
 
         if (claudeResult.exitCode !== 0) {
           throw new Error(`claude editing failed: ${claudeResult.stderr}`);
@@ -574,6 +578,16 @@ export const createSequence = action({
         console.log("[sequence] timeline plan validated:", validated.plan.segments.length, "segments,",
           validated.plan.segments.reduce((s: number, seg: any) => s + seg.duration, 0).toFixed(2) + "s total");
 
+        // Ingestion normalization (review P1-6): fill missing audio/subtitles
+        // fields with the canonical defaults (mirroring generate-composition's
+        // own fallbacks) and disable enabled tracks whose files were never
+        // downloaded. The stored timeline must be self-sufficient — and the
+        // sandbox must consume the EXACT same normalized plan so preview,
+        // DB and render can never drift.
+        const normalizedPlan = normalizeTimelinePlan(validated.plan, mediaFiles);
+        const normalizedStr = JSON.stringify(normalizedPlan);
+        await sb.files.write("/home/user/timeline.json", normalizedStr);
+
         // Persist the plan (revision 1, source 'ai'), then generate the
         // composition deterministically. The optimistic lock should never
         // fire here — we hold the render lock — but if it ever does, fail
@@ -581,7 +595,7 @@ export const createSequence = action({
         const revResult = await ctx.runMutation(api.tasks.saveTimelineRevision, {
           projectId,
           baseRevision: project.timelineRevision ?? 0,
-          timelineJson: timelineStr,
+          timelineJson: normalizedStr,
           source: "ai",
           note: "claude agent plan",
         });
@@ -773,6 +787,41 @@ export const renderFinalVideo = action({
       const compositionId = await getCompositionId(sb);
       const videoPath = `/home/user/out/${compositionId}.mp4`;
 
+      // ── 2a. Composition freshness (review P0-1) ──
+      // The rendered video must be a pure projection of the CURRENT timeline
+      // (Value 1). The composition in the sandbox was generated from the
+      // timeline as it was when createSequence ran — updateTimelineAudioSettings
+      // (sequence-preview download toggles) or any later write can have
+      // changed the DB copy since. Regenerate when the sandbox source drifted.
+      if (!project.timelineJson) throw new Error("no timeline in database");
+      const planCheck = validateTimelinePlan(project.timelineJson);
+      if (!planCheck.ok) {
+        throw new Error(`stored timeline invalid: ${planCheck.error}`);
+      }
+      let sandboxTimelineStr = "";
+      try {
+        const read = await sb.files.read("/home/user/timeline.json");
+        sandboxTimelineStr = typeof read === "string" ? read : new TextDecoder().decode(read as ArrayBuffer);
+      } catch {
+        // missing file → regenerate below
+      }
+      if (sandboxTimelineStr !== project.timelineJson) {
+        console.log("[render-final] timeline changed since the composition was generated, regenerating");
+        await sb.files.write("/home/user/timeline.json", project.timelineJson);
+        const regen = await sb.commands.run("bun run generate-composition.ts", {
+          cwd: "/home/user",
+          timeoutMs: 60000,
+          requestTimeoutMs: 60000,
+        });
+        if (regen.exitCode !== 0) {
+          throw new Error(`generate-composition failed: ${regen.stderr}`);
+        }
+        // Any existing out video was rendered from the OLD timeline — it is
+        // stale. Delete it so the render below (and the recovery check) can
+        // only ever upload output of the CURRENT composition.
+        await sb.commands.run(`rm -f "${videoPath}"`);
+      }
+
       // Check if video already exists (recovery from previous timeout).
       // A partially-written file from an interrupted render can easily be
       // larger than the naive 1000-byte threshold, so ALSO verify the
@@ -829,6 +878,7 @@ export const renderFinalVideo = action({
           details: `rendering composition: ${compositionId}`,
         });
 
+        const renderStartMs = Date.now();
         const remotionResult = await sb.commands.run(
           `bun remotion render ${compositionId} ${videoPath}`,
           {
@@ -837,6 +887,7 @@ export const renderFinalVideo = action({
             requestTimeoutMs: 300000,
           }
         );
+        console.log("[render-final] remotion render done in", Date.now() - renderStartMs, "ms, exit:", remotionResult.exitCode);
 
         if (remotionResult.exitCode !== 0) {
           throw new Error(`remotion render failed: ${remotionResult.stderr}`);

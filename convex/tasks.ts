@@ -4,7 +4,7 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { prompts } from "./prompts";
 import { requireAuth, requireProjectOwnership } from "./auth";
-import { resolveTimelineRevision, validateTimelinePlan } from "./lib/timelinePlan";
+import { resolveTimelineRevision, validateTimelinePlan, normalizeTimelinePlan } from "./lib/timelinePlan";
 
 const isImageUrl = (url: string): boolean => {
   const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
@@ -83,6 +83,7 @@ export const createChatProject = mutation({
       chatEnabled: true,
       userMessageCount: 0,
     });
+    console.log("[chat-project] created:", projectId, "files:", args.files.length, "user:", authUserId);
     return projectId;
   },
 });
@@ -424,9 +425,11 @@ export const markProjectSubmitted = mutation({
     await requireProjectOwnership(ctx, id);
     const project = await ctx.db.get(id);
     if (!project) throw new Error("project not found");
+    console.log("[submit] project:", id, "status:", project.status, "hasScript:", !!project.script);
 
     // Idempotency: only allow submission from draft/script_generating status
     if (project.status === "processing" || project.status === "rendering") {
+      console.log("[submit] already submitted, skipping:", id);
       return { id, alreadySubmitted: true };
     }
 
@@ -469,7 +472,9 @@ export const markProjectSubmitted = mutation({
 
           if (generatedCount >= 3) {
             // Beyond free tier — need credits
+            console.log("[submit] generatedCount:", generatedCount, "/ 3, totalCredits:", totalCredits);
             if (totalCredits === 0) {
+              console.error("[submit] FREE_TIER_LIMIT_REACHED for user:", project.userId);
               throw new Error("FREE_TIER_LIMIT_REACHED");
             }
             // Deduct 1 credit: subscription credits first, then purchased.
@@ -485,7 +490,10 @@ export const markProjectSubmitted = mutation({
               });
             }
             creditCharged = true;
+            console.log("[submit] deducted 1 credit (sub:", subCredits, "purchased:", purchasedCredits, ")");
           }
+        } else {
+          console.log("[submit] premium user, no credit deduction");
         }
       }
     }
@@ -495,6 +503,7 @@ export const markProjectSubmitted = mutation({
       status: "processing",
       creditCharged,
     });
+    console.log("[submit] status -> processing, creditCharged:", creditCharged);
     // Server-side scheduling: no longer relies on client fire-and-forget.
     // generateMediaAssets is an internalAction (R1): previously public with
     // NO auth — anyone could trigger the full paid pipeline (TTS + music +
@@ -502,6 +511,7 @@ export const markProjectSubmitted = mutation({
     await ctx.scheduler.runAfter(0, internal.tasks.generateMediaAssets, {
       projectId: id,
     });
+    console.log("[submit] scheduled generateMediaAssets for:", id);
     return { id };
   },
 });
@@ -1056,6 +1066,10 @@ export const getVideoVariant = action({
 });
 
 // ─── Get Project Preview Assets ─────────────────────────────────────────────
+// Audio settings are read from the timeline (the single source of truth,
+// same values generate-composition.ts bakes into the render). Project-level
+// fields remain ONLY as a legacy-row fallback — they are not updated by
+// editor saves and must never take precedence over the timeline.
 export const getProjectPreviewAssets = action({
   args: {
     projectId: v.id("projects"),
@@ -1072,7 +1086,7 @@ export const getProjectPreviewAssets = action({
         watermarkUrl: null,
         voiceSpeed: 1.0,
         voiceVolume: 1.0,
-        musicVolume: 0.3,
+        musicVolume: 0.1,
         originalSoundVolume: 0.0,
         includeVoice: true,
         includeMusic: true,
@@ -1083,20 +1097,44 @@ export const getProjectPreviewAssets = action({
     }
     if (project.userId !== authUserId) throw new Error("Forbidden: not project owner");
 
+    // Parse the timeline; fall back to project fields only if it is absent
+    // or unparseable (legacy rows).
+    let tl: any = null;
+    if (project.timelineJson) {
+      try { tl = JSON.parse(project.timelineJson); } catch { /* legacy fallback below */ }
+    }
+    const audio = tl?.audio;
+    const subs = tl?.subtitles;
+
+    const includeVoice = audio?.includeVoice ?? project.includeVoice ?? true;
+    const includeMusic = audio?.includeMusic ?? project.includeMusic ?? true;
+    const includeCaptions = subs?.includeCaptions ?? project.includeCaptions ?? true;
+    const includeOriginalSound =
+      audio?.includeOriginalSound ?? project.includeOriginalSound ?? false;
+    // Mirror generate-composition.ts exactly: original sound is muted (0)
+    // unless the track is explicitly enabled.
+    const originalSoundVolume = includeOriginalSound
+      ? (audio?.originalSoundVolume ?? project.originalSoundVolume ?? 1.0)
+      : 0;
+
     return {
       success: true,
       baseVideoUrl: project.renderedVideoUrl || null,
       voiceAudioUrl: project.audioUrl || null,
       musicAudioUrl: project.musicUrl || null,
       watermarkUrl: null,
-      voiceSpeed: project.voiceSpeed ?? 1.0,
-      voiceVolume: project.voiceVolume ?? 1.0,
-      musicVolume: project.musicVolume ?? 0.3,
-      originalSoundVolume: project.originalSoundVolume ?? 0.0,
-      includeVoice: project.includeVoice ?? true,
-      includeMusic: project.includeMusic ?? true,
-      includeCaptions: project.includeCaptions ?? true,
-      includeOriginalSound: project.includeOriginalSound ?? false,
+      // NOTE: "voiceSpeed" here is the PREVIEW PLAYBACK RATE for the voice
+      // track. The TTS speed (project.voiceSpeed) is already baked into the
+      // audio file at generation time and must NEVER be applied again —
+      // audio.playbackRate from the timeline is the only valid source.
+      voiceSpeed: audio?.playbackRate ?? 1.0,
+      voiceVolume: audio?.voiceVolume ?? project.voiceVolume ?? 1.0,
+      musicVolume: audio?.musicVolume ?? project.musicVolume ?? 0.1,
+      originalSoundVolume,
+      includeVoice,
+      includeMusic,
+      includeCaptions,
+      includeOriginalSound,
     };
   },
 });
@@ -1185,10 +1223,12 @@ export const saveEditorChanges = mutation({
     try {
       const original = await ctx.db.get(projectId);
       if (!original) throw new Error("project not found");
+      console.log("[editor-save] project:", projectId, "baseRevision:", baseRevision, "timeline length:", timelineJson.length, "currentRev:", original.timelineRevision ?? 0);
 
       // 0. Optimistic-lock check — reject stale writes instead of clobbering
       const check = resolveTimelineRevision(original.timelineRevision, baseRevision);
       if (!check.ok) {
+        console.warn("[editor-save] revision conflict, base:", baseRevision, "current:", check.currentRevision);
         return {
           success: false,
           conflict: true,
@@ -1205,19 +1245,29 @@ export const saveEditorChanges = mutation({
       // cross-check (no sandbox here) but catch structural/numeric errors.
       const validation = validateTimelinePlan(timelineJson);
       if (!validation.ok) {
+        console.error("[editor-save] timeline validation failed:", validation.error);
         return { success: false, error: `timeline validation failed: ${validation.error}` };
       }
+      console.log("[editor-save] timeline validation passed, revision:", check.nextRevision);
+
+      // Ingestion normalization (review P1-6): the stored timeline is the
+      // single source of truth for every consumer, so it must always be
+      // self-sufficient. The editor writes complete blocks (no-op here),
+      // but this guarantees the invariant for any writer.
+      const normalizedTimelineJson = JSON.stringify(
+        normalizeTimelinePlan(JSON.parse(timelineJson))
+      );
 
       await ctx.db.insert("timelines", {
         projectId,
         revision: check.nextRevision,
-        timelineJson,
+        timelineJson: normalizedTimelineJson,
         source: "user",
         note: "editor save",
         createdAt: Date.now(),
       });
       await ctx.db.patch(projectId, {
-        timelineJson,
+        timelineJson: normalizedTimelineJson,
         timelineRevision: check.nextRevision,
         assContent: assContent ?? original.assContent,
       });
@@ -1240,7 +1290,7 @@ export const saveEditorChanges = mutation({
         srtContent: original.srtContent,
         musicUrl: original.musicUrl,
         videoUrls: original.videoUrls,
-        timelineJson,
+        timelineJson: normalizedTimelineJson,
         timelineRevision: check.nextRevision,
         assContent: assContent ?? original.assContent,
         mediaDescriptions: original.mediaDescriptions,
@@ -1259,10 +1309,11 @@ export const saveEditorChanges = mutation({
       // 2b. Seed the fork's timeline history so its lineage is complete.
       //     Without this, getTimelineHistory(forkId) returns empty despite
       //     fork.timelineRevision being N+1, breaking audit/rollback.
+      console.log("[editor-save] fork created:", newProjectId, "revision:", check.nextRevision);
       await ctx.db.insert("timelines", {
         projectId: newProjectId,
         revision: check.nextRevision,
-        timelineJson,
+        timelineJson: normalizedTimelineJson,
         source: "user",
         note: "fork from parent",
         createdAt: Date.now(),
@@ -1311,6 +1362,85 @@ export const saveEditorChanges = mutation({
       return {
         success: false,
         error: error instanceof Error ? error.message : "Failed to save editor changes",
+      };
+    }
+  },
+});
+
+// ─── Update Timeline Audio Settings (review P0-1a) ──────────────────────────
+// Persists the sequence-preview toggles (voice / music / captions) into the
+// timeline BEFORE the first render, so what the user auditioned is exactly
+// what gets baked (WYSIWYG). This is a REAL timeline edit — revision bumps,
+// history row recorded — but unlike saveEditorChanges it patches the current
+// project in place (no fork): it only flips track flags, never touches
+// segments, so a re-render is not required for lineage purposes.
+export const updateTimelineAudioSettings = mutation({
+  args: {
+    projectId: v.id("projects"),
+    includeVoice: v.boolean(),
+    includeMusic: v.boolean(),
+    includeCaptions: v.boolean(),
+    baseRevision: v.number(),
+  },
+  handler: async (ctx, { projectId, includeVoice, includeMusic, includeCaptions, baseRevision }): Promise<{ success: boolean; revision?: number; conflict?: boolean; currentRevision?: number; error?: string }> => {
+    await requireProjectOwnership(ctx, projectId);
+    try {
+      const project = await ctx.db.get(projectId);
+      if (!project) throw new Error("project not found");
+      if (!project.timelineJson) throw new Error("no timeline to update");
+      // Guard: a rendered project's artifact is immutable — toggles belong
+      // to the pre-render audition (and post-render they are playback-only).
+      if (project.renderedVideoUrl) throw new Error("video already rendered — use the editor and re-render instead");
+      // Guard: a render is IN FLIGHT (renderFinalVideo holds the render lock
+      // and is baking the CURRENT revision). Persisting a new revision now
+      // would desync the artifact from the timeline (the in-flight render
+      // cannot pick it up). The client's second download attempt is rejected
+      // by the render lock anyway — reject here too, BEFORE any write.
+      const inFlightStep = project.renderProgress?.step;
+      if (inFlightStep && inFlightStep !== "sequence created" && inFlightStep !== "retry available") {
+        throw new Error("video is currently rendering — wait for it to finish before changing audio settings");
+      }
+
+      // Optimistic lock — mirrors saveEditorChanges. If another writer
+      // (e.g. the editor on another device) saved in between, reject
+      // instead of clobbering; the client re-opens its preview data.
+      const check = resolveTimelineRevision(project.timelineRevision, baseRevision);
+      if (!check.ok) {
+        console.warn("[audio-settings] revision conflict, base:", baseRevision, "current:", check.currentRevision);
+        return { success: false, conflict: true, currentRevision: check.currentRevision };
+      }
+
+      const plan = normalizeTimelinePlan(JSON.parse(project.timelineJson));
+      plan.audio.includeVoice = includeVoice;
+      plan.audio.includeMusic = includeMusic;
+      plan.subtitles.includeCaptions = includeCaptions;
+
+      const timelineJson = JSON.stringify(plan);
+      const validation = validateTimelinePlan(timelineJson);
+      if (!validation.ok) {
+        return { success: false, error: `timeline validation failed: ${validation.error}` };
+      }
+
+      await ctx.db.insert("timelines", {
+        projectId,
+        revision: check.nextRevision,
+        timelineJson,
+        source: "user",
+        note: "audio settings (sequence preview download)",
+        createdAt: Date.now(),
+      });
+      await ctx.db.patch(projectId, {
+        timelineJson,
+        timelineRevision: check.nextRevision,
+      });
+      console.log("[audio-settings] saved rev", check.nextRevision, {
+        includeVoice, includeMusic, includeCaptions,
+      });
+      return { success: true, revision: check.nextRevision };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to update audio settings",
       };
     }
   },
@@ -1453,6 +1583,7 @@ export const generateScriptOnly = action({
       }
 
       const fileUrls = project.fileUrls?.filter((url: string | null): url is string => url !== null) || [];
+      console.log("[script-only] calling generateScript, files:", fileUrls.length, "prompt length:", project.prompt?.length ?? 0);
       const scriptResult = await ctx.runAction(api.aiServices.generateScript, {
         prompt: project.prompt,
         imageUrls: fileUrls,
@@ -1464,6 +1595,7 @@ export const generateScriptOnly = action({
       }
 
       const script: string = scriptResult.script!;
+      console.log("[script-only] script generated, length:", script.length);
 
       await ctx.runMutation(internal.tasks.updateProjectWithReelfulData, {
         id: projectId,
@@ -1473,6 +1605,7 @@ export const generateScriptOnly = action({
 
       return { success: true, script };
     } catch (error) {
+      console.error("[script-only] failed:", error instanceof Error ? error.message : error);
       await ctx.runMutation(internal.tasks.updateProjectWithReelfulData, {
         id: projectId,
         error: error instanceof Error ? error.message : "script generation failed",
@@ -1569,6 +1702,8 @@ export const generateMediaAssets = internalAction({
       musicUrl = musicResult.success ? musicResult.musicUrl : undefined;
       if (musicUrl) {
         console.log("[generate-media] music uploaded:", musicUrl, "duration:", musicResult.musicDurationMs, "ms");
+      } else {
+        console.warn("[generate-media] music generation failed, continuing without music:", musicResult.error);
       }
 
       console.log("[generate-media] step 3: animating images");
