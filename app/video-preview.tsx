@@ -104,13 +104,25 @@ async function cacheSeqAsset(remoteUrl: string, key: string, projectId?: string)
   const target = `${dir}${filename}`;
 
   const info = await FileSystem.getInfoAsync(target);
-  if (info.exists) return target;
+  if (info.exists) {
+    console.log(`[seq-cache] Cache hit: ${key}`);
+    return target;
+  }
 
   await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-  const downloaded = await FileSystem.downloadAsync(remoteUrl, target);
+  console.log(`[seq-cache] Downloading: ${key} from ${remoteUrl.substring(0, 80)}...`);
+
+  // Race download against a 20s timeout — if the Convex storage URL is unreachable
+  // or hanging, fall back to the remote URL instead of blocking forever.
+  const downloadPromise = FileSystem.downloadAsync(remoteUrl, target);
+  const timeoutPromise = new Promise<{ uri: string; status: number }>((_, reject) =>
+    setTimeout(() => reject(new Error('Download timeout (20s)')), 20000)
+  );
+  const downloaded = await Promise.race([downloadPromise, timeoutPromise]);
   if (downloaded.status !== 200) {
     throw new Error(`Download failed with status: ${downloaded.status}`);
   }
+  console.log(`[seq-cache] Downloaded OK: ${key} → ${downloaded.uri.substring(0, 60)}...`);
   return downloaded.uri;
 }
 
@@ -305,7 +317,6 @@ export default function VideoPreviewScreen() {
   
   // Toast animation
   const toastOpacity = useRef(new Animated.Value(0)).current;
-  const composingToastOpacity = useRef(new Animated.Value(0)).current;
   
   // Query project status when generating
   const project = useQuery(
@@ -363,8 +374,9 @@ export default function VideoPreviewScreen() {
     outputRange: ['0deg', '360deg'],
   });
 
-  // Render hooks 鈥?declared early so handleRender can reference them
+  // Render hooks 鈥?declared early so handleRender/handleSeqDownload can reference them
   const renderFinalVideo = useAction(api.render.renderFinalVideo);
+  const updateTimelineAudioSettings = useMutation(api.tasks.updateTimelineAudioSettings);
   const [renderState, setRenderState] = useState<'idle' | 'rendering' | null>(null);
   const renderTriggeredRef = useRef(false);
 
@@ -428,7 +440,6 @@ export default function VideoPreviewScreen() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
-  const [isComposing, setIsComposing] = useState(false);
   const [isPlaying, setIsPlaying] = useState(true);
   const [showControls, setShowControls] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -490,17 +501,28 @@ export default function VideoPreviewScreen() {
   const seqActiveSegIdRef = useRef<string | null>(null);
   const seqAutoPlayedRef = useRef(false);
 
+  // P0-1: snapshot of the loaded timeline revision + toggle values, used by
+  // the download path to persist toggle changes into the timeline before
+  // rendering (only when they actually changed — no needless revision bump).
+  const seqTimelineRevisionRef = useRef(0);
+  const seqInitialTogglesRef = useRef<{ voice: boolean; music: boolean; captions: boolean } | null>(null);
+
   const isSequencePreview = !isGenerating && !videoUri && renderState === 'idle';
 
   // Load editor data for sequence preview
   useEffect(() => {
     if (!isSequencePreview || !projectId) return;
     let cancelled = false;
+    const effectStartTime = Date.now();
+    console.log('[seq-preview] Effect started, projectId:', projectId);
 
     (async () => {
       try {
         const data = await getEditorData({ projectId });
-        if (cancelled) return;
+        if (cancelled) {
+          console.log('[seq-preview] Cancelled after getEditorData');
+          return;
+        }
 
         console.log('[seq-preview] Editor data loaded:', {
           hasTimeline: !!data.timeline,
@@ -524,7 +546,7 @@ export default function VideoPreviewScreen() {
           duration: s.duration,
         }));
 
-        // Build clip URL map: video0.mp4 鈫?videoUrls[0], video1.mp4 鈫?videoUrls[1], etc.
+        // Build clip URL map: video0.mp4 → videoUrls[0], video1.mp4 → videoUrls[1], etc.
         // Also includes original uploaded videos appended after animated ones.
         const urlMap: Record<string, string> = {};
         const videoUrls = data.videoUrls || [];
@@ -550,12 +572,17 @@ export default function VideoPreviewScreen() {
           }
         }
 
+        console.log('[seq-preview] URL map:', JSON.stringify(Object.entries(urlMap).map(([k, v]) => [k, v?.substring(0, 60) + '...'])));
+
         // Cache all unique clip URLs locally for smooth playback
         const uniqueUrls = new Map<string, string[]>();
         for (const [file, url] of Object.entries(urlMap)) {
           if (!uniqueUrls.has(url)) uniqueUrls.set(url, []);
           uniqueUrls.get(url)!.push(file);
         }
+
+        console.log(`[seq-preview] Caching ${uniqueUrls.size} unique clips...`);
+        const cacheStartTime = Date.now();
 
         const localUrlMap: Record<string, string> = {};
         await Promise.all(
@@ -570,7 +597,10 @@ export default function VideoPreviewScreen() {
           })
         );
 
+        console.log(`[seq-preview] Clips cached in ${Date.now() - cacheStartTime}ms`);
+
         if (cancelled) return;
+        console.log('[seq-preview] Caching audio assets...');
 
         let localVoiceUrl: string | null = null;
         if (data.voiceAudioUrl) {
@@ -583,7 +613,10 @@ export default function VideoPreviewScreen() {
           catch (e) { console.warn('[seq-audio] Music cache failed, using remote:', e); localMusicUrl = data.musicAudioUrl; }
         }
 
-        if (cancelled) return;
+        if (cancelled) {
+          console.log('[seq-preview] Cancelled after audio caching');
+          return;
+        }
 
         const total = parsed.reduce((sum, s) => sum + s.duration, 0);
 
@@ -599,7 +632,10 @@ export default function VideoPreviewScreen() {
           setSeqCaptions(parseSrtToCaptions(data.srtContent));
         }
 
-        // Audio settings from timeline
+        // Audio settings from timeline. playbackRate ("voiceSpeed") comes
+        // ONLY from the timeline — project.voiceSpeed is the TTS GENERATION
+        // speed, already baked into the audio file; applying it again would
+        // double-speed the preview while the render plays at 1.0 (WYSIWYG).
         const tl = data.timeline;
         setSeqAudioSettings({
           voiceVolume: tl?.audio?.voiceVolume ?? data.voiceVolume ?? 1.0,
@@ -609,13 +645,23 @@ export default function VideoPreviewScreen() {
           includeMusic: tl?.audio?.includeMusic ?? data.includeMusic ?? true,
           includeCaptions: tl?.subtitles?.includeCaptions ?? data.includeCaptions ?? true,
           includeOriginalSound: tl?.audio?.includeOriginalSound ?? data.includeOriginalSound ?? false,
-          voiceSpeed: tl?.audio?.playbackRate ?? data.voiceSpeed ?? 1.0,
+          voiceSpeed: tl?.audio?.playbackRate ?? 1.0,
         });
 
-        // Initialize toggle states
-        setVoiceoverEnabled(tl?.audio?.includeVoice ?? data.includeVoice ?? true);
-        setMusicEnabled(tl?.audio?.includeMusic ?? data.includeMusic ?? true);
-        setCaptionsEnabled(tl?.subtitles?.includeCaptions ?? data.includeCaptions ?? true);
+        // Initialize toggle states. These are REAL timeline settings under
+        // the P0-1 semantics: on download they are persisted to the timeline
+        // before rendering (updateTimelineAudioSettings), so what the user
+        // auditioned is what gets baked. Snapshot the loaded values + revision
+        // so the download path can detect changes and skip the write when
+        // nothing moved.
+        const initVoice = tl?.audio?.includeVoice ?? data.includeVoice ?? true;
+        const initMusic = tl?.audio?.includeMusic ?? data.includeMusic ?? true;
+        const initCaptions = tl?.subtitles?.includeCaptions ?? data.includeCaptions ?? true;
+        setVoiceoverEnabled(initVoice);
+        setMusicEnabled(initMusic);
+        setCaptionsEnabled(initCaptions);
+        seqTimelineRevisionRef.current = data.timelineRevision ?? 0;
+        seqInitialTogglesRef.current = { voice: initVoice, music: initMusic, captions: initCaptions };
 
         // Load audio players
         await setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: false });
@@ -624,7 +670,7 @@ export default function VideoPreviewScreen() {
           try {
             const player = createAudioPlayer({ uri: localVoiceUrl });
             player.volume = tl?.audio?.voiceVolume ?? data.voiceVolume ?? 1.0;
-            const speed = tl?.audio?.playbackRate ?? data.voiceSpeed ?? 1.0;
+            const speed = tl?.audio?.playbackRate ?? 1.0;
             if (speed !== 1.0) {
               try { player.playbackRate = speed; player.shouldCorrectPitch = true; }
               catch (_) { console.warn('[seq-preview] playbackRate failed'); }
@@ -642,6 +688,10 @@ export default function VideoPreviewScreen() {
           try {
             const player = createAudioPlayer({ uri: localMusicUrl });
             player.volume = tl?.audio?.musicVolume ?? data.musicVolume ?? 0.1;
+            // Loop music to match the Remotion render (<Audio loop>): if the
+            // music track is shorter than the video, the render loops it, so
+            // the preview must too (WYSIWYG).
+            player.loop = true;
             player.pause();
             if (!cancelled) {
               seqMusicRef.current = player;
@@ -653,7 +703,7 @@ export default function VideoPreviewScreen() {
 
         if (!cancelled) {
           setSeqIsReady(true);
-          console.log('[seq-preview] Ready, total duration:', total);
+          console.log(`[seq-preview] Ready, total duration: ${total}, elapsed: ${Date.now() - effectStartTime}ms`);
         }
       } catch (e) {
         console.error('[seq-preview] Failed to load editor data:', e);
@@ -661,6 +711,7 @@ export default function VideoPreviewScreen() {
     })();
 
     return () => {
+      console.log(`[seq-preview] Effect cleanup, elapsed: ${Date.now() - effectStartTime}ms`);
       cancelled = true;
       seqVoiceRef.current?.remove();
       seqMusicRef.current?.remove();
@@ -869,6 +920,44 @@ export default function VideoPreviewScreen() {
     // If not yet rendered, trigger render first
     if (!project?.renderedVideoUrl) {
       console.log('[seq-preview] Starting render before download');
+
+      // P0-1b: the toggles are REAL timeline settings — persist any change
+      // BEFORE rendering so the baked video matches what the user auditioned
+      // (WYSIWYG). Skipped when nothing changed (no needless revision bump).
+      const initial = seqInitialTogglesRef.current;
+      if (
+        initial &&
+        (initial.voice !== voiceoverEnabled ||
+          initial.music !== musicEnabled ||
+          initial.captions !== captionsEnabled)
+      ) {
+        console.log('[seq-download] Persisting toggle changes into timeline before render');
+        const saveResult = await updateTimelineAudioSettings({
+          projectId,
+          includeVoice: voiceoverEnabled,
+          includeMusic: musicEnabled,
+          includeCaptions: captionsEnabled,
+          baseRevision: seqTimelineRevisionRef.current,
+        });
+        if (!saveResult?.success) {
+          if (saveResult?.conflict) {
+            Alert.alert(
+              'Timeline Updated Elsewhere',
+              'This edit was changed on another device. Reopen the preview and try again.'
+            );
+          } else {
+            Alert.alert('Save Failed', saveResult?.error || 'Could not save your audio settings.');
+          }
+          return;
+        }
+        seqTimelineRevisionRef.current = saveResult.revision ?? seqTimelineRevisionRef.current;
+        seqInitialTogglesRef.current = {
+          voice: voiceoverEnabled,
+          music: musicEnabled,
+          captions: captionsEnabled,
+        };
+      }
+
       setRenderState('rendering');
       renderTriggeredRef.current = true;
 
@@ -897,7 +986,7 @@ export default function VideoPreviewScreen() {
 
     // If already rendered, download directly
     // This will be handled by the existing download flow when videoUri is set
-  }, [projectId, project?.renderedVideoUrl, renderFinalVideo]);
+  }, [projectId, project?.renderedVideoUrl, renderFinalVideo, updateTimelineAudioSettings, voiceoverEnabled, musicEnabled, captionsEnabled]);
 
   // When render completes in sequence mode, auto-download the video
   useEffect(() => {
@@ -1041,7 +1130,6 @@ export default function VideoPreviewScreen() {
 
   // Convex hooks
   const getFreshVideoUrl = useAction(api.tasks.getFreshProjectVideoUrl);
-  const getVideoVariant = useAction(api.tasks.getVideoVariant);
   const getPreviewAssets = useAction(api.tasks.getProjectPreviewAssets);
   const completeVideoPreviewTips = useMutation(api.users.completeVideoPreviewTips);
 
@@ -1128,6 +1216,8 @@ export default function VideoPreviewScreen() {
         try {
           const player = createAudioPlayer({ uri: previewAssets.musicAudioUrl });
           player.volume = previewAssets.musicVolume ?? 0.1;
+          // Loop music to match the Remotion render (<Audio loop>) — WYSIWYG
+          player.loop = true;
           player.pause();
           if (!cancelled) {
             musicSoundRef.current = player;
@@ -1488,23 +1578,6 @@ export default function VideoPreviewScreen() {
     resetControlsTimeout();
   }, [isScrubbing, videoPlayer, duration, scrubProgress, resetControlsTimeout, useSeparateAudio, syncAudioPlayState]);
 
-  // Animate composing toast - stays visible during entire composing process
-  useEffect(() => {
-    if (isComposing) {
-      Animated.timing(composingToastOpacity, {
-        toValue: 1,
-        duration: 300,
-        useNativeDriver: true,
-      }).start();
-    } else {
-      Animated.timing(composingToastOpacity, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true,
-      }).start();
-    }
-  }, [isComposing, composingToastOpacity]);
-
   // Animate toast when download succeeds
   useEffect(() => {
     if (downloadSuccess) {
@@ -1638,8 +1711,8 @@ export default function VideoPreviewScreen() {
     }
   };
 
-  const handleDownload = async () => {
-    if (!videoUri || isDownloading) return;
+  const performDownload = async () => {
+    if (!videoUri) return;
 
     try {
       setIsDownloading(true);
@@ -1650,69 +1723,36 @@ export default function VideoPreviewScreen() {
       let isLocalFile = false;
       
       if (projectId) {
-        if (!isDefaultVariant) {
-          // User wants a custom variant - call getVideoVariant to compose it
-          console.log('[download] Getting custom variant:', { voice: voiceoverEnabled, music: musicEnabled, captions: captionsEnabled });
-          setIsComposing(true);
+        // P0-2 (review): the download is ALWAYS the rendered artifact —
+        // there is no server-side variant composition (deferred until user
+        // demand justifies the cost). Resolve the best available URL.
+        // 1. Re-check cache first - pre-cache may have completed while user was watching
+        const cachedPath = await getCachedVideoPath(videoUri, projectId);
+        
+        if (cachedPath) {
+          console.log('[download] Pre-cache completed! Using cached local file');
+          downloadUrl = cachedPath;
+          isLocalFile = true;
+        } else if (resolvedVideoUri && resolvedVideoUri.startsWith('file://')) {
+          // 2. resolvedVideoUri is already a local file
+          console.log('[download] Using cached local file for download');
+          downloadUrl = resolvedVideoUri;
+          isLocalFile = true;
+        } else if (resolvedVideoUri) {
+          // 3. We have a working remote URL (video is playing from it) - use it directly
+          //    Skip the Convex action round-trip since this URL is already working
+          console.log('[download] Using existing remote URL (skipping fresh URL fetch)');
+          downloadUrl = resolvedVideoUri;
+        } else {
+          // 4. Last resort - fetch fresh URL from backend
           try {
-            const variantResult = await getVideoVariant({
-              projectId: projectId,
-              includeVoice: voiceoverEnabled,
-              includeMusic: musicEnabled,
-              includeCaptions: captionsEnabled,
-            });
-            
-            if (variantResult.success && variantResult.url) {
-              downloadUrl = variantResult.url;
-              console.log('[download] Got variant URL:', variantResult.cached ? '(cached)' : '(newly composed)');
-            } else {
-              throw new Error('Failed to get video variant');
-            }
-          } catch (error) {
-            console.error('[download] Failed to get variant:', error);
-            Alert.alert(
-              'Variant Not Available', 
-              'Custom video options require the video to be re-processed. This feature may not be available for older videos. Downloading the default version instead.'
-            );
-            // Fall back to default URL
             const freshUrl = await getFreshVideoUrl({ projectId });
             if (freshUrl) {
               downloadUrl = freshUrl;
+              console.log('[download] Using fresh URL for download');
             }
-          } finally {
-            setIsComposing(false);
-          }
-        } else {
-          // Default variant - try to use cached/existing URL to avoid round-trips
-          
-          // 1. Re-check cache first - pre-cache may have completed while user was watching
-          const cachedPath = projectId ? await getCachedVideoPath(videoUri, projectId) : null;
-          
-          if (cachedPath) {
-            console.log('[download] Pre-cache completed! Using cached local file');
-            downloadUrl = cachedPath;
-            isLocalFile = true;
-          } else if (resolvedVideoUri && resolvedVideoUri.startsWith('file://')) {
-            // 2. resolvedVideoUri is already a local file
-            console.log('[download] Using cached local file for download');
-            downloadUrl = resolvedVideoUri;
-            isLocalFile = true;
-          } else if (resolvedVideoUri) {
-            // 3. We have a working remote URL (video is playing from it) - use it directly
-            //    Skip the Convex action round-trip since this URL is already working
-            console.log('[download] Using existing remote URL (skipping fresh URL fetch)');
-            downloadUrl = resolvedVideoUri;
-          } else {
-            // 4. Last resort - fetch fresh URL from backend
-            try {
-              const freshUrl = await getFreshVideoUrl({ projectId });
-              if (freshUrl) {
-                downloadUrl = freshUrl;
-                console.log('[download] Using fresh URL for download');
-              }
-            } catch (error) {
-              console.error('[download] Failed to fetch fresh URL, using existing:', error);
-            }
+          } catch (error) {
+            console.error('[download] Failed to fetch fresh URL, using existing:', error);
           }
         }
       }
@@ -1803,6 +1843,25 @@ export default function VideoPreviewScreen() {
     } finally {
       setIsDownloading(false);
     }
+  };
+
+  // P0-2 (review): toggles only change local playback (client-side mixing).
+  // The saved file is ALWAYS the rendered artifact — confirm explicitly when
+  // the user has non-default toggles on screen so they are not surprised.
+  const handleDownload = () => {
+    if (!videoUri || isDownloading) return;
+    if (projectId && !isDefaultVariant) {
+      Alert.alert(
+        'Save the rendered video?',
+        'Voice and music settings only change playback here. The saved video keeps every track exactly as rendered.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Save', onPress: () => { performDownload(); } },
+        ]
+      );
+      return;
+    }
+    performDownload();
   };
 
   const handleShowOnboarding = useCallback(() => {
@@ -2271,15 +2330,24 @@ export default function VideoPreviewScreen() {
               />
             </SidebarButton>
             
-            {/* Captions toggle */}
-            <SidebarButton 
-              onPress={() => captionsAvailable && setCaptionsEnabled(!captionsEnabled)}
+            {/* Captions toggle — LOCKED in completed mode: captions are baked
+                into the single rendered artifact and cannot be toggled off
+                here (only a re-render via the editor can change them).
+                Review P0-2: explain instead of silently doing nothing. */}
+            <SidebarButton
+              onPress={() => {
+                if (!captionsAvailable) return;
+                Alert.alert(
+                  'Captions are baked in',
+                  'This video already includes captions. Use the editor to change them and re-render.'
+                );
+              }}
               disabled={!captionsAvailable}
             >
-              <Subtitles 
-                size={26} 
-                color={!captionsAvailable ? "rgba(255,255,255,0.2)" : captionsEnabled ? Colors.white : "rgba(255,255,255,0.5)"} 
-                strokeWidth={2} 
+              <Subtitles
+                size={26}
+                color={!captionsAvailable ? "rgba(255,255,255,0.2)" : captionsEnabled ? Colors.white : "rgba(255,255,255,0.5)"}
+                strokeWidth={2}
               />
             </SidebarButton>
           </View>
@@ -2319,25 +2387,6 @@ export default function VideoPreviewScreen() {
         </View>
       )}
       
-      {/* Composing toast - visible during entire variant composing process */}
-      <Animated.View 
-        style={[
-          styles.toast, 
-          { 
-            opacity: composingToastOpacity,
-            top: insets.top + 60,
-          }
-        ]}
-        pointerEvents="none"
-      >
-        <BlurView intensity={40} tint="dark" style={styles.toastBlur}>
-          <View style={styles.composingToastRow}>
-            <ActivityIndicator size="small" color={Colors.white} />
-            <Text style={styles.toastText}>Composing your video...</Text>
-          </View>
-        </BlurView>
-      </Animated.View>
-
       {/* Download success toast */}
       <Animated.View 
         style={[
@@ -2535,12 +2584,6 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.medium,
     color: Colors.white,
     textAlign: 'center',
-  },
-  composingToastRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
   },
   renderButton: {
     flexDirection: 'row',

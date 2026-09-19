@@ -978,7 +978,11 @@ export default function VideoEditorScreen() {
         // ── Load audio & probe durations ──
         await setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: false });
 
-        const editorVoiceSpeed = data.voiceSpeed ?? 1.0;
+        // Playback rate comes ONLY from the timeline. data.voiceSpeed is the
+        // TTS GENERATION speed — already baked into the audio file at
+        // creation — so using it here would double-speed the preview while
+        // the render plays at timeline.audio.playbackRate (WYSIWYG).
+        const editorVoiceSpeed = data.timeline?.audio?.playbackRate ?? 1.0;
         setVoiceSpeed(editorVoiceSpeed);
 
         const voiceUri = localVoiceUrl || data.voiceAudioUrl;
