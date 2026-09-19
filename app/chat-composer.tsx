@@ -1248,8 +1248,14 @@ export default function ChatComposerScreen() {
   const handleSend = async () => {
     const selectedMedia = mediaUris.filter(m => !sentMediaIds.has(m.id));
     console.log('[chat-composer] handleSend: text length:', inputText.length, 'media total:', mediaUris.length, 'unsent:', selectedMedia.length, 'hasScript:', !!hasScript);
+    // Block only while uploads are IN FLIGHT. A 'failed' upload is a
+    // terminal state — it must NOT silently swallow the send here: the
+    // flow continues so the downstream branches can either ignore the
+    // failed item (some media succeeded) or explain it (the first-message
+    // "Upload Failed" alert). Previously this check was
+    // `!== 'uploaded'`, which made failed media cause a silent no-op.
     const mediaNotReady = selectedMedia.some(
-      (media) => media.uploadStatus !== 'uploaded'
+      (media) => media.uploadStatus === 'uploading' || media.uploadStatus === 'pending'
     );
     if (mediaNotReady) {
       console.log('[chat-composer] handleSend blocked: media still uploading');
