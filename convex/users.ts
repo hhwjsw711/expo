@@ -3,6 +3,7 @@ import { mutation, query, internalQuery, internalMutation, action } from "./_gen
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { signUserJWT, requireAuth } from "./auth";
+import { FREE_TIER_LIMIT } from "./lib/quota";
 
 // Max failed verify attempts before the OTP is destroyed and the user
 // must request a new code (brute-force guard).
@@ -184,8 +185,39 @@ export const backdoorLogin = mutation({
       throw new Error("Backdoor login is disabled");
     }
 
+    // P0-5: brute-force guard (mirrors the OTP MAX_OTP_ATTEMPTS pattern).
+    // The backdoor account is born premium with 200 credits, so a cracked
+    // password is a full-premium takeover — rate-limit the guessing: 5
+    // consecutive failures lock the backdoor for 15 minutes.
+    const attempt = await ctx.db.query("backdoorAttempts").first();
+    if (attempt?.lockedUntil && Date.now() < attempt.lockedUntil) {
+      throw new Error("Too many attempts. Try again later.");
+    }
+
     if (!backdoorPassword || args.password !== backdoorPassword) {
+      const BACKDOOR_MAX_ATTEMPTS = 5;
+      const count = (attempt?.count ?? 0) + 1;
+      const locked = count >= BACKDOOR_MAX_ATTEMPTS;
+      const fields = {
+        count: locked ? 0 : count,
+        lockedUntil: locked ? Date.now() + 15 * 60 * 1000 : undefined,
+        updatedAt: Date.now(),
+      };
+      if (attempt) {
+        await ctx.db.patch(attempt._id, fields);
+      } else {
+        await ctx.db.insert("backdoorAttempts", fields);
+      }
       throw new Error("Invalid password");
+    }
+
+    // Success: reset the counter (a lockedUntil in the past is cleared too).
+    if (attempt) {
+      await ctx.db.patch(attempt._id, {
+        count: 0,
+        lockedUntil: undefined,
+        updatedAt: Date.now(),
+      });
     }
 
     // Find or create user with phone "0000000000"
@@ -288,16 +320,28 @@ export const internalGetVoiceSettings = internalQuery({
 });
 
 // ─── Internal: Refund Credit (used by generateMediaAssets catch block) ──────
-// Adds 1 credit back to purchasedCredits. Called when the paid pipeline fails
-// AFTER markProjectSubmitted already deducted a credit (creditCharged=true).
+// P0-3: refunds to the SAME bucket the charge came from, via creditSource
+// on the project. Legacy projects without creditSource were always charged
+// from purchasedCredits by the old code, so the default preserves them.
 // internalMutation = unreachable from the client.
 export const internalRefundCredit = internalMutation({
-  args: { userId: v.id("users") },
-  handler: async (ctx, { userId }) => {
+  args: {
+    userId: v.id("users"),
+    creditSource: v.optional(v.union(
+      v.literal("subscription"),
+      v.literal("purchased"),
+    )),
+  },
+  handler: async (ctx, { userId, creditSource }) => {
     const user = await ctx.db.get(userId);
     if (!user) return;
-    const current = user.purchasedCredits || 0;
-    await ctx.db.patch(userId, { purchasedCredits: current + 1 });
+    if (creditSource === "subscription") {
+      const current = user.subscriptionCreditsRemaining || 0;
+      await ctx.db.patch(userId, { subscriptionCreditsRemaining: current + 1 });
+    } else {
+      const current = user.purchasedCredits || 0;
+      await ctx.db.patch(userId, { purchasedCredits: current + 1 });
+    }
   },
 });
 
@@ -358,27 +402,29 @@ export const getVideoGenerationStatus = query({
     }
 
     // Count user's projects that consumed or are consuming the paid
-    // pipeline — same rule as markProjectSubmitted (R2: includes
-    // "processing" so the UI count matches the enforced quota).
+    // pipeline — same fallback rule as the enforcement gate
+    // (applyPaidPipelineGate in tasks.ts): the lifetime counter is
+    // authoritative; legacy accounts without one fall back to the row
+    // count so the UI shows exactly what the gate enforces (P0-2).
     const projects = await ctx.db
       .query("projects")
       .withIndex("by_user", (q) => q.eq("userId", authUserId as Id<"users">))
       .collect();
 
-    const generatedCount = projects.filter(
+    const rowCount = projects.filter(
       (p) =>
         p.status === "completed" ||
         p.status === "rendering" ||
         p.status === "processing"
     ).length;
+    const generatedCount = user.lifetimeGeneratedCount ?? rowCount;
 
     const subCredits = user.subscriptionCreditsRemaining || 0;
     const purchasedCredits = user.purchasedCredits || 0;
     const totalCredits = subCredits + purchasedCredits;
 
     const isPremium = user.isPremium || false;
-    const freeLimit = 3;
-    const hasReachedLimit = !isPremium && totalCredits === 0 && generatedCount >= freeLimit;
+    const hasReachedLimit = !isPremium && totalCredits === 0 && generatedCount >= FREE_TIER_LIMIT;
 
     return {
       isPremium,
@@ -387,7 +433,7 @@ export const getVideoGenerationStatus = query({
       totalCreditsRemaining: totalCredits,
       hasReachedLimit,
       generatedCount,
-      limit: isPremium ? 999 : freeLimit,
+      limit: isPremium ? 999 : FREE_TIER_LIMIT,
     };
   },
 });

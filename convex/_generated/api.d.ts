@@ -11,6 +11,7 @@
 import type * as aiServices from "../aiServices.js";
 import type * as auth from "../auth.js";
 import type * as http from "../http.js";
+import type * as lib_quota from "../lib/quota.js";
 import type * as lib_timelineEngine from "../lib/timelineEngine.js";
 import type * as lib_timelinePlan from "../lib/timelinePlan.js";
 import type * as phoneAuth from "../phoneAuth.js";
@@ -32,6 +33,7 @@ declare const fullApi: ApiFromModules<{
   aiServices: typeof aiServices;
   auth: typeof auth;
   http: typeof http;
+  "lib/quota": typeof lib_quota;
   "lib/timelineEngine": typeof lib_timelineEngine;
   "lib/timelinePlan": typeof lib_timelinePlan;
   phoneAuth: typeof phoneAuth;

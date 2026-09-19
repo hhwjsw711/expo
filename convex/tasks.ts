@@ -5,6 +5,8 @@ import type { Id } from "./_generated/dataModel";
 import { prompts } from "./prompts";
 import { requireAuth, requireProjectOwnership } from "./auth";
 import { resolveTimelineRevision, validateTimelinePlan, normalizeTimelinePlan } from "./lib/timelinePlan";
+import { decideQuota } from "./lib/quota";
+import type { MutationCtx } from "./_generated/server";
 
 const isImageUrl = (url: string): boolean => {
   const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
@@ -416,6 +418,78 @@ export const updateProjectScript = mutation({
   },
 });
 
+// ─── Shared paid-pipeline quota gate (P0-1 / P0-2) ──────────────────────────
+// Used by markProjectSubmitted AND regenerateProjectEditing so every entry
+// into the paid pipeline passes the SAME gate (the regenerate path previously
+// had none at all — an unlimited free-pipeline backdoor). Returns the charge
+// record to stamp on the project. Throws FREE_TIER_LIMIT_REACHED when the
+// free tier is exhausted and no credits remain (the client maps this to
+// /paywall on both paths).
+//
+// Adversarial review S2: EVERY decision path patches the user doc —
+// lifetimeGeneratedCount++ and/or the credit deduction. That write is the
+// OCC anchor: two concurrent gates for the same user conflict on the user
+// document and Convex retries the loser, which re-reads the bumped counter.
+// A gate that only reads would reintroduce the free-tier TOCTOU.
+//
+// Adversarial review H1: legacy accounts (pre-counter) fall back to the row
+// count at gate time and self-backfill; from this submission on the counter
+// is authoritative and deleting projects can never shrink it again.
+async function applyPaidPipelineGate(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+): Promise<{ creditCharged: boolean; creditSource: "subscription" | "purchased" | undefined }> {
+  const user = await ctx.db.get(userId);
+  if (!user) throw new Error("user not found");
+
+  let lifetimeGenerated = user.lifetimeGeneratedCount;
+  if (lifetimeGenerated === undefined) {
+    const allProjects = await ctx.db
+      .query("projects")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    lifetimeGenerated = allProjects.filter(
+      (p) =>
+        p.status === "completed" ||
+        p.status === "rendering" ||
+        p.status === "processing",
+    ).length;
+  }
+
+  const decision = decideQuota({
+    isPremium: user.isPremium || false,
+    subscriptionCredits: user.subscriptionCreditsRemaining || 0,
+    purchasedCredits: user.purchasedCredits || 0,
+    lifetimeGenerated,
+  });
+
+  switch (decision.action) {
+    case "reject":
+      console.error("[quota-gate] FREE_TIER_LIMIT_REACHED for user:", userId);
+      throw new Error("FREE_TIER_LIMIT_REACHED");
+    case "premium":
+      console.log("[quota-gate] premium user, no credit deduction");
+      await ctx.db.patch(userId, { lifetimeGeneratedCount: lifetimeGenerated + 1 });
+      return { creditCharged: false, creditSource: undefined };
+    case "charge": {
+      const creditSource = decision.source;
+      console.log("[quota-gate] deducting 1 credit (source:", creditSource + ")");
+      const creditPatch =
+        creditSource === "subscription"
+          ? { subscriptionCreditsRemaining: (user.subscriptionCreditsRemaining || 0) - 1 }
+          : { purchasedCredits: (user.purchasedCredits || 0) - 1 };
+      await ctx.db.patch(userId, {
+        ...creditPatch,
+        lifetimeGeneratedCount: lifetimeGenerated + 1,
+      });
+      return { creditCharged: true, creditSource };
+    }
+    case "free":
+      await ctx.db.patch(userId, { lifetimeGeneratedCount: lifetimeGenerated + 1 });
+      return { creditCharged: false, creditSource: undefined };
+  }
+}
+
 // ─── Mark Project Submitted ─────────────────────────────────────────────────
 export const markProjectSubmitted = mutation({
   args: {
@@ -433,75 +507,29 @@ export const markProjectSubmitted = mutation({
       return { id, alreadySubmitted: true };
     }
 
-    // ── Server-side quota check + atomic credit deduction (R2) ──────────
-    // Previously the quota check only counted "completed"/"rendering"
-    // projects, NOT "processing" — so N concurrent submissions all saw the
-    // same count and all passed (TOCTOU). Now "processing" is included,
-    // and since Convex serializes mutations, the second call sees the
-    // first's "processing" patch and is correctly rejected.
+    // ── Server-side quota gate + atomic credit deduction (R2 / P0-1) ────
+    // Shared with regenerateProjectEditing via applyPaidPipelineGate +
+    // convex/lib/quota.ts. The lifetime counter replaces the row-count
+    // check (deleting a project used to reset the free tier) and every
+    // decision path patches the user doc — the OCC anchor that serializes
+    // concurrent submissions for the same user. The previous TOCTOU fix
+    // relied on "processing" rows being visible to the next mutation; the
+    // user-doc write is stronger and now also covers the regenerate path.
     //
-    // Credit model:
+    // Credit model (product semantics frozen by adversarial review H3):
     //   Premium → unlimited, no deduction.
-    //   Free + credits → first 3 projects free; 4th+ costs 1 credit each,
-    //                    deducted atomically HERE (same transaction as the
-    //                    status patch, so a race can never overspend).
-    //   Free + 0 credits → max 3 projects (FREE_TIER_LIMIT_REACHED).
-    let creditCharged = false;
-    if (project.userId) {
-      const user = await ctx.db.get(project.userId);
-      if (user) {
-        const isPremium = user.isPremium || false;
-
-        if (!isPremium) {
-          const subCredits = user.subscriptionCreditsRemaining || 0;
-          const purchasedCredits = user.purchasedCredits || 0;
-          const totalCredits = subCredits + purchasedCredits;
-
-          // Count ALL projects that have consumed or are consuming the
-          // paid pipeline — including "processing" to close the TOCTOU gap.
-          const allProjects = await ctx.db
-            .query("projects")
-            .withIndex("by_user", (q) => q.eq("userId", project.userId!))
-            .collect();
-          const generatedCount = allProjects.filter(
-            (p) =>
-              p.status === "completed" ||
-              p.status === "rendering" ||
-              p.status === "processing"
-          ).length;
-
-          if (generatedCount >= 3) {
-            // Beyond free tier — need credits
-            console.log("[submit] generatedCount:", generatedCount, "/ 3, totalCredits:", totalCredits);
-            if (totalCredits === 0) {
-              console.error("[submit] FREE_TIER_LIMIT_REACHED for user:", project.userId);
-              throw new Error("FREE_TIER_LIMIT_REACHED");
-            }
-            // Deduct 1 credit: subscription credits first, then purchased.
-            // This is atomic — same mutation/transaction as the status
-            // patch below, so a concurrent submission can never double-spend.
-            if (subCredits > 0) {
-              await ctx.db.patch(project.userId, {
-                subscriptionCreditsRemaining: subCredits - 1,
-              });
-            } else {
-              await ctx.db.patch(project.userId, {
-                purchasedCredits: purchasedCredits - 1,
-              });
-            }
-            creditCharged = true;
-            console.log("[submit] deducted 1 credit (sub:", subCredits, "purchased:", purchasedCredits, ")");
-          }
-        } else {
-          console.log("[submit] premium user, no credit deduction");
-        }
-      }
-    }
+    //   Free → first 3 paid-pipeline entries free; 4th+ costs 1 credit,
+    //          charged subscription-first, deducted atomically HERE.
+    //   Free + 0 credits → FREE_TIER_LIMIT_REACHED.
+    const { creditCharged, creditSource } = project.userId
+      ? await applyPaidPipelineGate(ctx, project.userId)
+      : { creditCharged: false, creditSource: undefined };
 
     await ctx.db.patch(id, {
       submittedAt: Date.now(),
       status: "processing",
       creditCharged,
+      creditSource,
     });
     console.log("[submit] status -> processing, creditCharged:", creditCharged);
     // Server-side scheduling: no longer relies on client fire-and-forget.
@@ -512,22 +540,6 @@ export const markProjectSubmitted = mutation({
       projectId: id,
     });
     console.log("[submit] scheduled generateMediaAssets for:", id);
-    return { id };
-  },
-});
-
-// ─── Mark Project Submitted (Test Mode) ─────────────────────────────────────
-export const markProjectSubmittedTestMode = mutation({
-  args: {
-    id: v.id("projects"),
-  },
-  handler: async (ctx, { id }) => {
-    await requireProjectOwnership(ctx, id);
-    await ctx.db.patch(id, {
-      submittedAt: Date.now(),
-      status: "processing",
-      renderMode: "test",
-    });
     return { id };
   },
 });
@@ -695,13 +707,29 @@ export const tryAcquireRenderLock = internalMutation({
       return { success: false, error: "project not found" };
     }
     if (project.status === "rendering") {
-      return { success: false, error: "already rendering" };
+      // STALE LOCK RECOVERY (P0-4, mirrors internalTryRenderFinalLock): a
+      // Convex action crash/restart mid-sequence-render leaves status
+      // "rendering" forever with no one left to release it — the project
+      // used to deadlock permanently. Locks older than 15 minutes are
+      // stale and force-reacquired. Legacy locks WITHOUT renderLockedAt
+      // (created before this field existed) are treated as stale too, so
+      // already-stuck projects self-heal on the next attempt.
+      const RENDER_LOCK_STALE_MS = 15 * 60 * 1000; // 15 minutes
+      const lockAge = Date.now() - (project.renderLockedAt ?? 0);
+      if (project.renderLockedAt && lockAge < RENDER_LOCK_STALE_MS) {
+        return { success: false, error: "already rendering" };
+      }
+      console.warn(
+        `[render-lock] Stale sequence lock (${
+          project.renderLockedAt ? `${(lockAge / 1000 / 60).toFixed(1)}min old` : "legacy, no timestamp"
+        }), force-acquiring`,
+      );
     }
     if (project.renderedVideoUrl) {
       return { success: false, error: "already rendered" };
     }
-    // Atomically set status to rendering
-    await ctx.db.patch(id, { status: "rendering" });
+    // Atomically set status to rendering + stamp the lock time
+    await ctx.db.patch(id, { status: "rendering", renderLockedAt: Date.now() });
     return { success: true };
   },
 });
@@ -761,6 +789,23 @@ export const internalTryRenderFinalLock = internalMutation({
       },
     });
     return { ok: true };
+  },
+});
+
+// ─── Internal: Mark Credit Refunded (refund idempotency, P0-3) ──────────────
+// generateMediaAssets refunds a charged credit on pipeline failure. The
+// refund MUST also clear projects.creditCharged in the same failure flow:
+// a failed project passes markProjectSubmitted's idempotency check (only
+// processing/rendering are blocked), so a resubmit charges AGAIN; and if
+// the flag stayed true, a second pipeline failure would refund AGAIN off
+// the stale flag — multiple refunds for one charge.
+export const internalMarkCreditRefunded = internalMutation({
+  args: {
+    id: v.id("projects"),
+  },
+  handler: async (ctx, { id }) => {
+    await ctx.db.patch(id, { creditCharged: false });
+    return id;
   },
 });
 
@@ -919,6 +964,16 @@ export const regenerateProjectEditing = mutation({
     await requireProjectOwnership(ctx, args.sourceProjectId);
     const original = await ctx.db.get(args.sourceProjectId);
     if (!original) throw new Error("project not found");
+    if (!original.userId) throw new Error("project has no owner");
+
+    // ── P0-1: same billing gate as markProjectSubmitted ─────────────────
+    // Every regenerated fork enters the full paid pipeline (fresh Claude
+    // edit + E2B + Remotion) via the client polling service's Priority 3
+    // (status "completed" + media assets + no timelineJson). Previously
+    // this mutation had NO quota check and NO credit deduction — an
+    // unlimited free-pipeline backdoor with two UI entries. The client
+    // already maps FREE_TIER_LIMIT_REACHED to /paywall on both paths.
+    const { creditCharged, creditSource } = await applyPaidPipelineGate(ctx, original.userId);
 
     const newProjectId = await ctx.db.insert("projects", {
       userId: original.userId,
@@ -945,6 +1000,8 @@ export const regenerateProjectEditing = mutation({
       includeOriginalSound: original.includeOriginalSound,
       renderStep: "not_started",
       renderError: undefined,
+      creditCharged,
+      creditSource,
     });
 
     return { success: true, newProjectId };
@@ -1809,8 +1866,17 @@ export const generateMediaAssets = internalAction({
       try {
         const proj = await ctx.runQuery(internal.tasks.internalGetProject, { id: projectId });
         if (proj?.creditCharged && proj.userId) {
+          // P0-3: refund to the SAME bucket the charge came from
+          // (previously always purchasedCredits, even when subscription
+          // credits were spent — users could launder subscription credits
+          // into permanent ones via repeated fail/refund cycles).
           await ctx.runMutation(internal.users.internalRefundCredit, {
             userId: proj.userId as Id<"users">,
+            creditSource: proj.creditSource,
+          });
+          // P0-3: clear the charged flag so a resubmit can't double-refund.
+          await ctx.runMutation(internal.tasks.internalMarkCreditRefunded, {
+            id: projectId,
           });
           console.log("[generate-media] credit refunded for project:", projectId);
         }

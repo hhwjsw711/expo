@@ -46,6 +46,11 @@ export default defineSchema({
     subscriptionType: v.optional(v.string()),
     // RevenueCat app_user_id (bound at login via Purchases.logIn(convexUserId))
     revenuecatAppUserId: v.optional(v.string()),
+    // P0-2: lifetime count of paid-pipeline entries (submissions + gated
+    // regenerations). Replaces the row-count quota check, which reset when
+    // a project was deleted (free-tier exploit). Missing = legacy account:
+    // the gate self-backfills from the row count at first gated entry.
+    lifetimeGeneratedCount: v.optional(v.number()),
     // Backdoor password (for dev login)
     backdoorPassword: v.optional(v.string()),
     createdAt: v.number(),
@@ -150,6 +155,17 @@ export default defineSchema({
     // project (beyond the free tier). generateMediaAssets checks this flag
     // in its catch block to refund the credit on pipeline failure.
     creditCharged: v.optional(v.boolean()),
+    // P0-3: which bucket the credit was deducted from, so the refund goes
+    // back where it came from (previously refunds always went to
+    // purchasedCredits even when subscription credits were spent).
+    creditSource: v.optional(v.union(
+      v.literal("subscription"),
+      v.literal("purchased"),
+    )),
+    // P0-4: when tryAcquireRenderLock claimed the sequence render. A lock
+    // older than 15 minutes (or a legacy lock with no timestamp) is treated
+    // as stale and force-reacquired, mirroring internalTryRenderFinalLock.
+    renderLockedAt: v.optional(v.number()),
   }).index("by_user", ["userId"]),
 
   // Timeline version history — one row per write, for audit and rollback.
@@ -211,4 +227,15 @@ export default defineSchema({
     code: v.string(),
     redeemedAt: v.number(),
   }).index("by_user_code", ["userId", "code"]),
+
+  // P0-5: backdoor login brute-force guard — singleton row. Counts failed
+  // password attempts; 5 consecutive failures lock the backdoor for 15
+  // minutes (mirrors the OTP MAX_OTP_ATTEMPTS pattern). The backdoor account
+  // is born premium with 200 credits, so a cracked password is a full
+  // premium takeover — the guessing must be rate-limited.
+  backdoorAttempts: defineTable({
+    count: v.number(),
+    lockedUntil: v.optional(v.number()),
+    updatedAt: v.number(),
+  }),
 });

@@ -1863,8 +1863,8 @@ export default function ChatComposerScreen() {
         });
 
         Alert.alert(
-          '馃幀 Generation Started!',
-          'Your video is being created! Feel free to close the app 鈥?we\'ll send you a notification when it\'s ready.',
+          '🎬 Generation Started!',
+          'Your video is being created! Feel free to close the app — we\'ll send you a notification when it\'s ready.',
           [{
             text: 'Got it!',
             style: 'default',
@@ -1958,8 +1958,8 @@ export default function ChatComposerScreen() {
       });
       
       Alert.alert(
-        '馃幀 Generation Started!',
-        'Your video is being created! Feel free to close the app 鈥?we\'ll send you a notification when it\'s ready.',
+        '🎬 Generation Started!',
+        'Your video is being created! Feel free to close the app — we\'ll send you a notification when it\'s ready.',
         [{
           text: 'Got it!',
           style: 'default',
