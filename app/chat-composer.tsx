@@ -1,5 +1,5 @@
 ﻿import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
-import { ArrowLeft, Plus, Send, X, Check, Info, Copy, MessageSquare, Volume2, Mic, Gauge, MoreHorizontal, VolumeX, RotateCcw, Pencil } from 'lucide-react-native';
+import { ArrowLeft, Plus, Send, X, Check, Info, Copy, MessageSquare, Volume2, Mic, Gauge, MoreHorizontal, VolumeX, RotateCcw, Pencil, AlertCircle } from 'lucide-react-native';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Alert,
@@ -1190,6 +1190,60 @@ export default function ChatComposerScreen() {
   const removeMedia = (id: string) => {
     setMediaUris(prev => prev.filter(m => m.id !== id));
   };
+
+  // H10: retry path for a single failed upload. Reuses the same
+  // R2 -> Convex-import pipeline as uploadMediaInBackground; presigned
+  // URLs may have expired since the original attempt, so a fresh one is
+  // generated per retry. Previously a failed item had NO visual marker
+  // and NO recovery: it was silently dropped by every send path.
+  const uploadSingleItem = async (item: PendingMedia) => {
+    const ext = item.type === 'video' ? 'mp4' : 'jpg';
+    const filename = `${item.type}_${item.id}_retry.${ext}`;
+    const contentType = item.type === 'video' ? 'video/mp4' : 'image/jpeg';
+
+    setMediaUris(prev => prev.map(m =>
+      m.id === item.id ? { ...m, uploadStatus: 'uploading' as const } : m
+    ));
+
+    try {
+      const r2UploadInfos = await retryWithBackoff(
+        () => generateMultipleR2UploadUrls({ files: [{ filename, contentType }] }),
+        3,
+        2000
+      );
+      const r2Info = r2UploadInfos[0];
+      const r2Result = await retryWithBackoff(
+        () => uploadSingleMediaFileToR2(
+          { uri: item.uri, type: item.type, assetId: item.assetId },
+          r2Info,
+          contentType
+        ),
+        3,
+        2000
+      );
+      const { storageId } = await retryWithBackoff(
+        () => importR2FileToConvexStorage({
+          r2Url: r2Result.r2Url,
+          r2Key: r2Result.r2Key,
+          contentType,
+          storageId: r2Result.storageId as Id<"_storage"> | undefined,
+        }),
+        3,
+        2000
+      );
+      setMediaUris(prev => prev.map(m =>
+        m.id === item.id
+          ? { ...m, uploadStatus: 'uploaded' as const, storageId }
+          : m
+      ));
+      console.log('[chat-composer][upload-retry] file uploaded OK:', item.id);
+    } catch (error) {
+      console.error('[chat-composer][upload-retry] file FAILED:', item.id, error instanceof Error ? error.message : error);
+      setMediaUris(prev => prev.map(m =>
+        m.id === item.id ? { ...m, uploadStatus: 'failed' as const } : m
+      ));
+    }
+  };
   
   const handleSend = async () => {
     const selectedMedia = mediaUris.filter(m => !sentMediaIds.has(m.id));
@@ -1223,6 +1277,16 @@ export default function ChatComposerScreen() {
     
     // Need either media or text for first message
     if (!hasScript && pendingMedia.length === 0) {
+      // H10: if the user DID add media but none of it made it to storage,
+      // say so — the old generic "No Media" alert made it look like the
+      // picker never worked.
+      if (mediaUris.some(m => m.uploadStatus === 'failed')) {
+        Alert.alert(
+          'Upload Failed',
+          'Some media failed to upload. Tap the red item to retry, or remove it with the ✕ button.'
+        );
+        return;
+      }
       Alert.alert('No Media', 'Please add some photos or videos first.');
       return;
     }
@@ -2587,6 +2651,18 @@ export default function ChatComposerScreen() {
                           <ActivityIndicator size="small" color={Colors.white} />
                         </View>
                       )}
+
+                      {/* H10: failed upload overlay — tap to retry */}
+                      {item.uploadStatus === 'failed' && (
+                        <TouchableOpacity
+                          style={styles.composerMediaFailedOverlay}
+                          onPress={() => uploadSingleItem(item)}
+                          activeOpacity={0.7}
+                        >
+                          <AlertCircle size={20} color={Colors.white} strokeWidth={2} />
+                          <Text style={styles.composerMediaFailedText}>Tap to retry</Text>
+                        </TouchableOpacity>
+                      )}
                       
                       {/* Remove button */}
                       <TouchableOpacity
@@ -3065,6 +3141,22 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  composerMediaFailedOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(220,38,38,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 4,
+  },
+  composerMediaFailedText: {
+    color: Colors.white,
+    fontSize: 11,
+    fontWeight: '600',
   },
   composerMediaRemove: {
     position: 'absolute',

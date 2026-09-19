@@ -198,7 +198,7 @@ export const [AppProvider, useApp] = createContextHook(() => {
         .filter(project =>
           project.status === 'completed' &&
           !project.renderedVideoUrl &&
-          !project.timelineJson &&
+          !project.hasTimelineJson &&
           project.audioUrl &&
           project.videoUrls && project.videoUrls.length > 0
         )
@@ -225,7 +225,7 @@ export const [AppProvider, useApp] = createContextHook(() => {
           project.status === 'completed' &&
           !project.renderedVideoUrl &&
           !project.sandboxId &&
-          project.timelineJson &&
+          project.hasTimelineJson &&
           project.audioUrl &&
           project.videoUrls && project.videoUrls.length > 0
         )

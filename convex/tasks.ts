@@ -302,6 +302,15 @@ export const getChatMessages = query({
 });
 
 // ─── Get Projects ───────────────────────────────────────────────────────────
+// ─── Get Projects (feed list) ──────────────────────────────────────────────
+// H8: light projection for the feed. The old shape spread the ENTIRE project
+// document plus a signed URL for EVERY source file of EVERY project — under
+// Convex subscription semantics that re-ran on any project change. The feed
+// and AppContext consumers use none of the per-file URLs; timelineJson (a
+// large field) is only checked for existence, so it is projected to
+// hasTimelineJson. take(200) is a guard rail, NOT pagination: real cursor
+// pagination (usePaginatedQuery) is deferred until data volume justifies
+// rewriting the AppContext full-sync merge model (tracked in the P2 plan).
 export const getProjects = query({
   args: {
     userId: v.optional(v.id("users")),
@@ -312,17 +321,27 @@ export const getProjects = query({
       .query("projects")
       .withIndex("by_user", (q) => q.eq("userId", authUserId as Id<"users">))
       .order("desc")
-      .collect();
+      .take(200);
 
     return Promise.all(
       projects.map(async (project) => ({
-        ...project,
-        fileUrls: await Promise.all(
-          project.files.map((fileId) => ctx.storage.getUrl(fileId))
-        ),
+        _id: project._id,
+        prompt: project.prompt,
+        name: project.name,
+        status: project.status,
+        createdAt: project.createdAt,
+        script: project.script,
+        duration: project.duration,
+        renderedVideoUrl: project.renderedVideoUrl,
         thumbnailUrl: project.thumbnail
           ? await ctx.storage.getUrl(project.thumbnail)
           : project.thumbnailUrl || null,
+        error: project.error,
+        renderError: project.renderError,
+        sandboxId: project.sandboxId,
+        audioUrl: project.audioUrl,
+        videoUrls: project.videoUrls,
+        hasTimelineJson: project.timelineJson !== undefined,
       }))
     );
   },
