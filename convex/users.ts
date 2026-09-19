@@ -689,9 +689,15 @@ export const redeemPromoCode = mutation({
 
     const user = await ctx.db.get(authUserId as Id<"users">);
     const current = user?.purchasedCredits || 0;
+    // S4 (product decision 2026-09-19): promo codes grant CREDITS ONLY.
+    // Previously this also set isPremium: true with no expiry mechanism —
+    // one leaked code meant unlimited lifetime paid-pipeline usage per
+    // redeemer. Credits bound the liability to the code's denomination and
+    // flow through the existing quota gate naturally. If a time-boxed
+    // premium promo (or LTD tier) is ever wanted, that is a deliberate
+    // pricing feature — extend the PROMO_CODES value shape then.
     await ctx.db.patch(authUserId as Id<"users">, {
       purchasedCredits: current + credits,
-      isPremium: true,
     });
 
     // Record the redemption so the same code can't be reused.
@@ -701,7 +707,7 @@ export const redeemPromoCode = mutation({
       redeemedAt: Date.now(),
     });
 
-    return { success: true, durationDays: 30, credits };
+    return { success: true, credits };
   },
 });
 

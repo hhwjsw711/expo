@@ -361,7 +361,7 @@ export default function PaywallScreen() {
         console.log(`[Paywall][TestMode] Accepting promo code "${promoCode.trim()}" without backend validation`);
         markPaywallCompleted();
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        setPromoSuccess('Premium activated for 30 days! (Test Mode)');
+        setPromoSuccess('Promo code applied! (Test Mode)');
         setShowConfetti(true);
         navigateAfterSuccess(2500);
         return;
@@ -376,7 +376,7 @@ export default function PaywallScreen() {
         markPaywallCompleted();
         
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        setPromoSuccess(`Premium activated for ${result.durationDays} days!`);
+        setPromoSuccess(`${result.credits} credits added!`);
         setShowConfetti(true);
         navigateAfterSuccess(2500);
       } else {
