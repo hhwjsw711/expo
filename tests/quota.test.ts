@@ -7,7 +7,7 @@
 // delegates to, including the product semantics frozen by the adversarial
 // review (H3): credit-charged entries also consume the free-tier count.
 import { describe, expect, test } from "bun:test";
-import { decideQuota, FREE_TIER_LIMIT, type QuotaDecision } from "../convex/lib/quota";
+import { decideQuota, FREE_TIER_LIMIT, MAX_USER_MESSAGES_PER_PROJECT, type QuotaDecision } from "../convex/lib/quota";
 
 const base = {
   isPremium: false,
@@ -39,6 +39,10 @@ describe("decideQuota — free tier", () => {
 
   test("FREE_TIER_LIMIT is 3 (guard against silent semantic drift)", () => {
     expect(FREE_TIER_LIMIT).toBe(3);
+  });
+
+  test("MAX_USER_MESSAGES_PER_PROJECT is 10 (client mirror guard)", () => {
+    expect(MAX_USER_MESSAGES_PER_PROJECT).toBe(10);
   });
 });
 

@@ -47,8 +47,12 @@ import { ENABLE_TEST_RUN_MODE } from '@/constants/config';
 import VoiceConfigModal from '@/components/VoiceConfigModal';
 import ChatOnboarding, { SpotlightRect } from '@/components/ChatOnboarding';
 import MediaPreviewModal, { PreviewMediaItem } from '@/components/MediaPreviewModal';
+import { ERROR_CODES, getErrorCode } from '@/lib/convexErrors';
+import { MAX_USER_MESSAGES_PER_PROJECT } from '@/convex/lib/quota';
 
-const MAX_USER_MESSAGES = 10;
+// H7: single source of truth lives in convex/lib/quota.ts; mirrored here
+// for UX only — the server enforces the cap authoritatively.
+const MAX_USER_MESSAGES = MAX_USER_MESSAGES_PER_PROJECT;
 const UPLOAD_CONCURRENCY = 3;
 const MAX_MESSAGE_LENGTH = 2500;
 const MAX_MEDIA_FILES = 10;
@@ -1879,9 +1883,7 @@ export default function ChatComposerScreen() {
     } catch (error) {
       console.error('[chat-composer] Regenerate error:', error);
       
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      
-      if (errorMessage.includes('FREE_TIER_LIMIT_REACHED') || errorMessage.includes('NO_CREDITS_AVAILABLE')) {
+      if (getErrorCode(error) === ERROR_CODES.FREE_TIER_LIMIT_REACHED) {
         router.push('/paywall');
       } else {
         Alert.alert('Error', 'Failed to regenerate video. Please try again.');
@@ -1970,9 +1972,8 @@ export default function ChatComposerScreen() {
       );
     } catch (error) {
       console.error('Error approving:', error);
-      const errorMessage = error instanceof Error ? error.message : String(error);
       
-      if (errorMessage.includes('FREE_TIER_LIMIT_REACHED')) {
+      if (getErrorCode(error) === ERROR_CODES.FREE_TIER_LIMIT_REACHED) {
         router.push('/paywall');
       } else {
         Alert.alert('Error', 'Failed to start generation. Please try again.');

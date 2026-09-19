@@ -14,6 +14,12 @@
 
 export const FREE_TIER_LIMIT = 3;
 
+// H7: max user messages per project conversation. Enforced server-side in
+// addChatMessage (each user message drives a paid Claude call); the client
+// mirrors it in chat-composer.tsx for UX only. Single constant shared by
+// both sides — keep the client import aliased to this, never re-hardcode.
+export const MAX_USER_MESSAGES_PER_PROJECT = 10;
+
 export type CreditSource = "subscription" | "purchased";
 
 export type QuotaDecision =

@@ -1,11 +1,11 @@
 import { query, mutation, action, internalMutation, internalQuery, internalAction } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { prompts } from "./prompts";
 import { requireAuth, requireProjectOwnership } from "./auth";
 import { resolveTimelineRevision, validateTimelinePlan, normalizeTimelinePlan } from "./lib/timelinePlan";
-import { decideQuota } from "./lib/quota";
+import { decideQuota, MAX_USER_MESSAGES_PER_PROJECT } from "./lib/quota";
 import type { MutationCtx } from "./_generated/server";
 
 const isImageUrl = (url: string): boolean => {
@@ -123,13 +123,36 @@ export const addFilesToProject = mutation({
 export const addChatMessage = mutation({
   args: {
     projectId: v.id("projects"),
-    role: v.string(),
+    // Role whitelist: the client previously passed a free-form string. Only
+    // these two roles exist in the product; anything else was data pollution.
+    role: v.union(v.literal("user"), v.literal("assistant")),
     content: v.string(),
     messageIndex: v.optional(v.number()),
     mediaIds: v.optional(v.array(v.id("_storage"))),
   },
   handler: async (ctx, args) => {
     await requireProjectOwnership(ctx, args.projectId);
+    const project = await ctx.db.get(args.projectId);
+    if (!project) throw new Error("project not found");
+
+    // H7: server-side cap — each user message drives a paid Claude call. The
+    // client mirrors this for UX (chat-composer.tsx) but the server is the
+    // authority: API-direct calls previously bypassed the cap entirely.
+    // Rows are the source of truth (the project counter is display state
+    // that forks used to reset). The userMessageCount patch below doubles as
+    // the OCC anchor: concurrent sends conflict on the project doc and the
+    // retry re-runs this count.
+    if (args.role === "user") {
+      const existing = await ctx.db
+        .query("chatMessages")
+        .withIndex("by_project", (q) => q.eq("projectId", args.projectId))
+        .collect();
+      const userCount = existing.filter((m) => m.role === "user").length;
+      if (userCount >= MAX_USER_MESSAGES_PER_PROJECT) {
+        console.error("[chat] MAX_USER_MESSAGES_REACHED for project:", args.projectId);
+        throw new ConvexError({ code: "MAX_USER_MESSAGES_REACHED" });
+      }
+    }
 
     const messageId = await ctx.db.insert("chatMessages", {
       projectId: args.projectId,
@@ -142,13 +165,10 @@ export const addChatMessage = mutation({
 
     // Increment user message count if user message
     if (args.role === "user") {
-      const project = await ctx.db.get(args.projectId);
-      if (project) {
-        await ctx.db.patch(args.projectId, {
-          userMessageCount: (project.userMessageCount || 0) + 1,
-          prompt: project.prompt ? project.prompt : args.content,
-        });
-      }
+      await ctx.db.patch(args.projectId, {
+        userMessageCount: (project.userMessageCount || 0) + 1,
+        prompt: project.prompt ? project.prompt : args.content,
+      });
     }
 
     return messageId;
@@ -166,6 +186,17 @@ export const forkChatProject = mutation({
     const original = await ctx.db.get(args.sourceProjectId);
     if (!original) throw new Error("project not found");
 
+    // Copy chat messages — fetched BEFORE the project insert so the fork
+    // inherits the REAL conversation, including the user-message count.
+    // Previously userMessageCount was hardcoded to 0 on the fork: the copy
+    // kept the history but reset the budget, so fork-chains granted a fresh
+    // 10-message Claude budget per fork — an unlimited free-Claude loop.
+    const messages = await ctx.db
+      .query("chatMessages")
+      .withIndex("by_project", (q) => q.eq("projectId", args.sourceProjectId))
+      .collect();
+    const userMessageCount = messages.filter((m) => m.role === "user").length;
+
     const newProjectId = await ctx.db.insert("projects", {
       userId: authUserId as Id<"users">,
       prompt: original.prompt,
@@ -175,7 +206,7 @@ export const forkChatProject = mutation({
       createdAt: Date.now(),
       status: "draft",
       chatEnabled: true,
-      userMessageCount: 0,
+      userMessageCount,
       // R3: copy the script + voice settings from the source so the fork is
       // usable even if the frontend flow is interrupted between fork and
       // updateProjectScript. Media assets (audioUrl/videoUrls) are NOT
@@ -191,12 +222,6 @@ export const forkChatProject = mutation({
       includeCaptions: original.includeCaptions,
       includeOriginalSound: original.includeOriginalSound,
     });
-
-    // Copy chat messages
-    const messages = await ctx.db
-      .query("chatMessages")
-      .withIndex("by_project", (q) => q.eq("projectId", args.sourceProjectId))
-      .collect();
 
     for (const msg of messages) {
       await ctx.db.insert("chatMessages", {
@@ -466,7 +491,9 @@ async function applyPaidPipelineGate(
   switch (decision.action) {
     case "reject":
       console.error("[quota-gate] FREE_TIER_LIMIT_REACHED for user:", userId);
-      throw new Error("FREE_TIER_LIMIT_REACHED");
+      // Structured error (M16): the client matches the code via
+      // lib/convexErrors.ts getErrorCode() — no more message-string sniffing.
+      throw new ConvexError({ code: "FREE_TIER_LIMIT_REACHED" });
     case "premium":
       console.log("[quota-gate] premium user, no credit deduction");
       await ctx.db.patch(userId, { lifetimeGeneratedCount: lifetimeGenerated + 1 });
