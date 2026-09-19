@@ -54,17 +54,45 @@ Return only the script text.
   },
 
   /**
-   * Music Generation
-   * Used to generate background music for social media videos
+   * Music Generation (MiniMax music-3.0, instrumental)
+   * Used to generate background music for social media videos.
+   *
+   * M18 (P1-D): previously a single bare line ("light background music
+   * for ${style} social media video") with five style candidates rotting
+   * in comments below it. The real style channel is the user's
+   * preferredStyle (playful | professional | travel, chosen at
+   * onboarding) — so the candidates' ingredients (funky groove, synth
+   * textures, lo-fi mellow, cinematic build, acoustic warmth) are now
+   * distributed across the three real styles plus a neutral fallback.
+   *
+   * The description targets the mix the track will actually live in:
+   * instrumental, sitting at ~10% volume beneath a voiceover in a
+   * ~15-second vertical video. So: start immediately (no long intro),
+   * hold one consistent groove (no dramatic builds/drops), and stay
+   * unobtrusive enough to sit quietly under speech.
    */
   musicGeneration: {
-    prompt: (style: string = "professional") => `light background music for ${style} social media video`,
-    // Alternative styles you can use:
-    // funky: "modern jazz with improv elements and funky beats",
-    // electronic: "upbeat synthwave with energetic electronic grooves",
-    // lofi: "chill lo-fi hip-hop with mellow relaxing vibes",
-    // cinematic: "inspiring cinematic orchestral score with emotional build",
-    // acoustic: "warm indie pop with acoustic guitar tones",
+    prompt: (style: string = "professional") => {
+      const styleMap: Record<string, string> = {
+        playful:
+          "bright playful pop, bouncy mid-tempo groove, light synth plucks, handclaps and shaker percussion, cheerful and danceable",
+        professional:
+          "clean modern minimal electronic, steady confident pulse, soft piano and muted synth pads, focused and understated",
+        travel:
+          "warm cinematic travel montage music, gentle acoustic guitar arpeggios, airy pads, soft percussion, uplifting and evocative",
+      };
+      const description =
+        styleMap[style] ??
+        "light modern instrumental background music, steady unobtrusive groove, warm and neutral";
+      return [
+        `${description}.`,
+        "Instrumental only, no vocals, no lyrics.",
+        "Starts with energy immediately — no long intro, no silence at the beginning.",
+        "Keeps one consistent groove from start to finish — no big builds or drops.",
+        "Gentle and unobtrusive, designed to sit quietly beneath a spoken voiceover at low volume.",
+        "Clean production, loop-friendly ending.",
+      ].join(" ");
+    },
   },
 
   /**
