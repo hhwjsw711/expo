@@ -194,7 +194,7 @@ export const animateImage = internalAction({
     prompt: v.optional(v.string()),
   },
   handler: async (ctx, { imageUrl, prompt = prompts.imageAnimation.default }) => {
-    console.log("[animate] starting image animation");
+    console.log("[animate] starting image animation, imageUrl:", imageUrl?.substring(0, 80), "...");
     try {
       const apiKey = process.env.FAL_API_KEY;
       if (!apiKey) throw new Error("FAL_API_KEY not set");
@@ -245,7 +245,7 @@ export const generateVoiceover = internalAction({
     speed: v.optional(v.number()),
   },
   handler: async (ctx, { text, voiceId = "English_Trustworthy_Man", speed = 1.2 }): Promise<{ success: boolean; audioUrl?: string | null; durationMs?: number; srtContent?: string; error?: string }> => {
-    console.log("[voiceover] generating voiceover with MiniMax, speed:", speed);
+    console.log("[voiceover] generating voiceover, voiceId:", voiceId, "speed:", speed, "text length:", text.length);
     try {
       const apiKey = process.env.MINIMAX_API_KEY;
       if (!apiKey) throw new Error("MINIMAX_API_KEY not set");

@@ -39,6 +39,8 @@ export function useVideoPolling() {
   // transient timeouts (sandbox kept alive by render.ts).
   const sequenceRetryCount = useRef(new Map<string, number>());
   const SEQUENCE_MAX_RETRIES = 2;
+  // E2E TEST: last observed poll state per project — only log on change.
+  const lastPollStateRef = useRef(new Map<string, string>());
   const convex = useConvex();
   const createSequence = useAction(api.render.createSequence);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -95,6 +97,27 @@ export function useVideoPolling() {
             project.audioUrl &&
             ((project.videoUrls && project.videoUrls.length > 0) || hasVideoFiles)
           );
+
+          // E2E TEST LOG: print the poll state only when something changed
+          // vs the last poll for this project, to avoid spamming.
+          const projKey = video.projectId ?? video.id;
+          const stateKey = `${project.status}|${!!project.audioUrl}|${project.videoUrls?.length ?? 0}|${!!project.sandboxId}|${!!project.timelineJson}|${!!project.renderedVideoUrl}|${project.renderProgress?.step ?? 'none'}`;
+          const lastKey = lastPollStateRef.current.get(projKey);
+          if (stateKey !== lastKey) {
+            lastPollStateRef.current.set(projKey, stateKey);
+            console.log(
+              '[VideoPolling][STATE]', projKey.substring(0, 8),
+              'status:', project.status,
+              '| audio:', !!project.audioUrl,
+              '| videoUrls:', project.videoUrls?.length ?? 0,
+              '| hasVideoFiles:', hasVideoFiles,
+              '| allMedia:', hasAllMediaAssets,
+              '| sandbox:', !!project.sandboxId,
+              '| timeline:', !!project.timelineJson,
+              '| rendered:', !!project.renderedVideoUrl,
+              '| step:', project.renderProgress?.step ?? 'none',
+            );
+          }
           
           // ONLY mark as failed if backend explicitly sets status to 'failed'
           // Otherwise, keep showing processing/generating state

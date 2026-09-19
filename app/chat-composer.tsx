@@ -1091,8 +1091,10 @@ export default function ChatComposerScreen() {
   
   const uploadMediaInBackground = async (allMedia: PendingMedia[], newMediaOnly: PendingMedia[]) => {
     const filesToUpload = newMediaOnly.filter(m => !m.storageId);
-    
+    console.log('[chat-composer][upload] starting upload:', filesToUpload.length, 'files (of', newMediaOnly.length, 'new media)');
+
     if (filesToUpload.length === 0) {
+      console.log('[chat-composer][upload] nothing to upload (all have storageId)');
       inputRef.current?.focus();
       return;
     }
@@ -1166,8 +1168,9 @@ export default function ChatComposerScreen() {
             ? { ...m, uploadStatus: 'uploaded' as const, storageId }
             : m
         ));
+        console.log('[chat-composer][upload] file uploaded OK:', item.id, 'storageId:', storageId);
       } catch (error) {
-        console.error('Failed to upload file', item.id, error);
+        console.error('[chat-composer][upload] file FAILED:', item.id, error instanceof Error ? error.message : error);
         setMediaUris(prev => prev.map(m =>
           m.id === item.id
             ? { ...m, uploadStatus: 'failed' as const }
@@ -1186,10 +1189,12 @@ export default function ChatComposerScreen() {
   
   const handleSend = async () => {
     const selectedMedia = mediaUris.filter(m => !sentMediaIds.has(m.id));
+    console.log('[chat-composer] handleSend: text length:', inputText.length, 'media total:', mediaUris.length, 'unsent:', selectedMedia.length, 'hasScript:', !!hasScript);
     const mediaNotReady = selectedMedia.some(
       (media) => media.uploadStatus !== 'uploaded'
     );
     if (mediaNotReady) {
+      console.log('[chat-composer] handleSend blocked: media still uploading');
       return;
     }
 
@@ -1199,6 +1204,7 @@ export default function ChatComposerScreen() {
     
     // Check message limit
     if (userMessageCount >= MAX_USER_MESSAGES) {
+      console.log('[chat-composer] handleSend blocked: message limit', userMessageCount);
       Alert.alert(
         'Message Limit Reached',
         'You can edit the script directly by tapping on it, or approve and generate your video.'
@@ -1261,6 +1267,7 @@ export default function ChatComposerScreen() {
   
   const generateScript = async (userInput: string, isNewMedia = false, newMediaCount = 0, newMediaIds: Id<"_storage">[] = [], isRetry = false) => {
     if (!isMountedRef.current) return;
+    console.log('[chat-composer] generateScript: input length:', userInput.length, 'isNewMedia:', isNewMedia, 'mediaCount:', newMediaCount, 'isRetry:', isRetry);
     lastGenerateArgsRef.current = { userInput, isNewMedia, newMediaCount, newMediaIds, userMessagePersisted: false };
     setIsGenerating(true);
     let requestProjectId: Id<"projects"> | null = createdProjectId;
@@ -1418,6 +1425,7 @@ export default function ChatComposerScreen() {
       
       // Generate script (saveAndNotify: true means backend saves script and sends notification)
       // Backend will wait for captions from the captioning pipeline if not yet available.
+      console.log('[chat-composer] calling generateChatScript, projectId:', currentProjectId, 'history:', conversationHistory.length, 'newMediaFiles:', newMediaFilesForCaptioning?.length ?? 0);
       const result = await generateChatScript({
         projectId: currentProjectId!,
         conversationHistory,
@@ -1428,6 +1436,7 @@ export default function ChatComposerScreen() {
         newMediaCount,
         saveAndNotify: true,
       });
+      console.log('[chat-composer] generateChatScript result: success:', result.success, 'script length:', result.script?.length ?? 0, 'error:', result.error ?? 'none');
       
       // Remove loading message and add real response
       if (isMountedRef.current) {
